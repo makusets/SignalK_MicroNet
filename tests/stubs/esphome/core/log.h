@@ -6,3 +6,6 @@
 #define ESP_LOGCONFIG(tag, ...) ESP_LOGD(tag, __VA_ARGS__)
 
 #define ESP_LOGW(tag, ...) ESP_LOGD(tag, __VA_ARGS__)
+
+#define ESP_LOGI(tag, ...) ESP_LOGD(tag, __VA_ARGS__)
+#define LOG_PIN(prefix, pin) do { (void)(prefix); (void)(pin); } while(0)

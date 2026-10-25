@@ -16,7 +16,7 @@ int main() {
                           4,5,5,0,0x2c,0x3a,4,6,5,0xff,0xfb,9};
   micronet_cc1101::MicronetCC1101 radio;
   radio.set_parent(&hub); radio.set_frequency(915.915f); radio.setup();
-  assert(!radio.failed);
+  assert(!radio.failed && radio.ready());
   assert(spi::chip.regs[0x10]==0x8a && spi::chip.regs[0x12]==2);
   assert(spi::chip.regs[4]==0x55 && spi::chip.regs[5]==0x99);
   unsigned freq = (unsigned(spi::chip.regs[0xd])<<16) | (unsigned(spi::chip.regs[0xe])<<8) | spi::chip.regs[0xf];
@@ -86,5 +86,13 @@ int main() {
   assert(radio.transmit(ping.data(),ping.size(),0));
   fake_microseconds+=50001; radio.loop();
   assert(listener.completed==2 && !listener.success && !radio.busy());
+  // Reproduce the user's startup log: a low/absent SPI response must never
+  // be advertised as a usable radio, nor accepted for transmission.
+  spi::chip.regs[0x31]=0;
+  micronet_cc1101::MicronetCC1101 missing_radio;
+  missing_radio.set_parent(&hub); missing_radio.set_gdo0_pin(&pin); missing_radio.setup();
+  assert(missing_radio.failed && !missing_radio.ready());
+  assert(std::string(missing_radio.failure_reason())=="CC1101 SPI identification failed");
+  assert(!missing_radio.transmit(ping.data(),ping.size(),6000));
   std::cout << "Streaming radio, filters, expiry, timer wrap and recovery checks passed\n";
 }

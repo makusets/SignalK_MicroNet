@@ -15,6 +15,9 @@ class RadioTransport {
   // by the radio, not by blocking ESPHome's loop or streaming from an ISR.
   virtual bool transmit(const uint8_t *data, size_t length, uint32_t preamble_ms) = 0;
   virtual bool busy() const = 0;
+  // Adapters may fail during setup even when a transport object is registered.
+  virtual bool ready() const { return true; }
+  virtual const char *failure_reason() const { return nullptr; }
   virtual ~RadioTransport() = default;
 };
 }}

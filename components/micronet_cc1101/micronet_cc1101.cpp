@@ -26,11 +26,14 @@ void MicronetCC1101::restart_() {
   strobe_(0x34); // SRX
 }
 void MicronetCC1101::setup() {
+  initialized_=false;
   spi_setup();
   strobe_(0x30); delay(2); // SRES
   uint8_t part = read_reg_(0x30), version = read_reg_(0x31);
+  chip_part_=part; chip_version_=version;
   if (part != 0 || version == 0 || version == 0xff) {
     ESP_LOGE(TAG, "CC1101 not found: part=%02X version=%02X", part, version);
+    ESP_LOGE(TAG,"Check CC1101 3.3 V power, common ground and SPI wiring (CSN/SCK/SI/SO)");
     mark_failed(); return;
   }
   // 26 MHz crystal. 2-FSK, 76.77 kbaud, +/-38.09 kHz deviation,
@@ -60,7 +63,8 @@ void MicronetCC1101::setup() {
   }
   strobe_(0x33); delay(1); // Calibrate once, then avoid 0.8 ms recalibration jitter on every poll.
   write_reg_(0x18,0x08);
-  restart_(); fast_loop_.start();
+  restart_(); fast_loop_.start(); initialized_=true;
+  ESP_LOGI(TAG,"CC1101 initialized: part=%02X version=%02X, %.3f MHz",part,version,frequency_);
 }
 void IRAM_ATTR MicronetCC1101::edge_(MicronetCC1101 *self) {
   if (!self->capture_tx_.load(std::memory_order_relaxed)) return;
@@ -79,7 +83,7 @@ void MicronetCC1101::write_fifo_(const uint8_t *data,size_t length) {
   disable();
 }
 bool MicronetCC1101::transmit(const uint8_t *data,size_t length,uint32_t preamble_ms) {
-  if (is_failed() || !gdo0_pin_ || transmitting_ || reception_started_ ||
+  if (!ready() || !gdo0_pin_ || transmitting_ || reception_started_ ||
       length<14 || length>sizeof(tx_data_) || preamble_ms>6000) return false;
   std::memcpy(tx_data_,data,length); tx_length_=length;
   strobe_(0x36); delayMicroseconds(100); // IDLE before flushing/configuring TX.
@@ -142,6 +146,9 @@ void MicronetCC1101::loop() {
   if (reception_started_ && millis() - started_ > 30) { ++timeouts_; restart_(); }
 }
 void MicronetCC1101::dump_config() {
+  LOG_PIN("  CS Pin: ",this->cs_);
+  LOG_PIN("  GDO0 Pin: ",gdo0_pin_);
+  ESP_LOGCONFIG(TAG,"  SPI identity: part=%02X version=%02X; initialized=%s",chip_part_,chip_version_,ready()?"YES":"NO");
   ESP_LOGCONFIG(TAG, "Micronet CC1101 at %.3f MHz; overflow=%u timeout=%u", frequency_, unsigned(overflows_), unsigned(timeouts_));
 }
 }}

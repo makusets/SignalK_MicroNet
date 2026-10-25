@@ -25,6 +25,7 @@ class Master : public Component, public micronet::PacketListener {
   void on_packet(const uint8_t *data, size_t length) override;
   void on_transmitted(bool success, uint32_t sync_end, uint32_t end) override;
  protected:
+  const char *radio_error_() const;
   void update_entities_();
   void save_pair_();
   struct Record { uint32_t version,network,wind,payload; };

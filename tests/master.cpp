@@ -90,7 +90,12 @@ int main() {
   // Check the ESPHome web button, binary sensor, and flash restore integration.
   struct Radio : micronet::RadioTransport {
     Frame frame;
+    bool available=true;
+    unsigned transmissions=0;
+    bool ready() const override { return available; }
+    const char *failure_reason() const override { return available?nullptr:"CC1101 SPI identification failed"; }
     bool transmit(const uint8_t *p,size_t n,uint32_t preamble) override {
+      ++transmissions;
       std::copy(p,p+n,frame.data.begin()); frame.length=n; frame.preamble_ms=preamble; return true;
     }
     bool busy() const override { return false; }
@@ -117,5 +122,26 @@ int main() {
   Master restored; restored.set_hub(&hub2); restored.set_network_id(NETWORK);
   binary_sensor::BinarySensor restored_paired; restored.set_paired(&restored_paired); restored.setup();
   assert(restored_paired.state);
+  // A registered-but-failed radio is the startup failure in the user's log.
+  // Preserve the saved association but report radio failure, not pairing failure.
+  radio.available=false;
+  micronet::Micronet failed_hub; failed_hub.set_transport(&radio);
+  Master failed_master; failed_master.set_hub(&failed_hub); failed_master.set_network_id(NETWORK);
+  binary_sensor::BinarySensor failed_pairing,failed_online,retained_pair;
+  text_sensor::TextSensor failure_status;
+  failed_master.set_pairing(&failed_pairing); failed_master.set_online(&failed_online);
+  failed_master.set_paired(&retained_pair); failed_master.set_status(&failure_status);
+  failed_master.setup();
+  assert(failed_master.failed && retained_pair.state && !failed_online.state && !failed_pairing.state);
+  assert(failure_status.state=="Radio unavailable: CC1101 SPI identification failed");
+  unsigned transmissions=radio.transmissions;
+  PairButton failed_button; failed_button.set_parent(&failed_master); failed_button.press(); failed_master.loop();
+  assert(!failed_pairing.state && radio.transmissions==transmissions);
+  assert(failure_status.state=="Radio unavailable: CC1101 SPI identification failed");
+  assert(fake_flash.size()==1);
+  micronet::Micronet no_transport_hub;
+  Master no_transport; no_transport.set_hub(&no_transport_hub); no_transport.set_status(&failure_status);
+  no_transport.setup();
+  assert(no_transport.failed && failure_status.state=="Radio unavailable: No transmit-capable radio configured");
   std::cout<<"Master framing, wake/join/confirm, malformed controls, slot resize, timer wrap, timeout rollback, web button and flash restore passed\n";
 }

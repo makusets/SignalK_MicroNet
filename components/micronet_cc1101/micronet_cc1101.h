@@ -15,6 +15,8 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   void set_gdo0_pin(InternalGPIOPin *pin) { gdo0_pin_=pin; }
   bool transmit(const uint8_t *data, size_t length, uint32_t preamble_ms) override;
   bool busy() const override { return transmitting_ || reception_started_; }
+  bool ready() const override { return initialized_ && !is_failed(); }
+  const char *failure_reason() const override { return initialized_ ? nullptr : "CC1101 SPI identification failed"; }
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -28,7 +30,8 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   ISRInternalGPIOPin isr_gdo0_;
   std::atomic<bool> capture_tx_{false}, sync_seen_{false}, end_seen_{false};
   std::atomic<uint32_t> sync_end_us_{0}, tx_end_us_{0};
-  bool transmitting_{false}, preamble_pending_{false};
+  bool initialized_{false}, transmitting_{false}, preamble_pending_{false};
+  uint8_t chip_part_{0xff}, chip_version_{0xff};
   uint32_t fill_at_{0}, tx_timeout_{0};
   uint8_t tx_data_[48]{};
   size_t tx_length_{0};

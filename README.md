@@ -163,6 +163,22 @@ defined lengths up to 96 bytes (its packet schema limits lengths to 64), so this
 adapter streams the FIFO and adjusts the hardware length after parsing the header.
 See [docs/protocol.md](docs/protocol.md) for the contract and bench checks.
 
+## Troubleshooting radio startup
+
+`CC1101 not found: part=00 version=00` means the radio did not return a valid SPI
+identity. Part `00` is normal for a CC1101; version `00` is not. Check the actual
+module pin labels (not assumed connector order), its 3.3 V supply and common
+ground, and the CSN/SCK/SI/SO connections against the wiring table. SI is MOSI;
+SO is MISO. GDO0 is a separate signal used after identification for TX timing.
+The configured frequency and the T120's pairing state do not explain an invalid
+SPI identity response.
+
+The component logs CS/GDO0 pins and the read identity. A successful start logs
+`CC1101 initialized: part=00 version=...`. A failed radio now prevents pairing and
+reports `Radio unavailable: CC1101 SPI identification failed` in the status entity.
+Correct the wiring/supply or configuration and reboot before attempting pairing.
+A saved association is retained when radio initialization fails; online remains off.
+
 ## Development
 
 For component contributors, `examples/lolin-d32.yaml` loads local sources and

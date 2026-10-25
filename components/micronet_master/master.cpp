@@ -6,8 +6,16 @@
 #include <cstdio>
 namespace esphome { namespace micronet_master {
 static const char *const TAG="micronet_master";
+const char *Master::radio_error_() const {
+  auto *transport=hub_->transport();
+  if (!transport) return "No transmit-capable radio configured";
+  if (!transport->ready()) {
+    const char *reason=transport->failure_reason();
+    return reason?reason:"Radio initialization failed";
+  }
+  return nullptr;
+}
 void Master::setup() {
-  if (!hub_->transport()) { ESP_LOGE(TAG,"No transmit-capable radio configured"); mark_failed(); return; }
   if (!network_id_) {
     uint8_t mac[6]; get_mac_address_raw(mac);
     network_id_=0x81000000U|(uint32_t(mac[3])<<16)|(uint32_t(mac[4])<<8)|mac[5];
@@ -22,9 +30,16 @@ void Master::setup() {
   // An impossible device ID prevents publishing unpaired nearby wind devices.
   hub_->set_device_id(engine_.paired()?engine_.saved().wind:0);
   initialized_=true; update_entities_();
+  if (const char *error=radio_error_()) {
+    ESP_LOGE(TAG,"Micronet master disabled: %s",error); mark_failed();
+  }
 }
 void Master::start_pairing() {
-  if (!initialized_ || is_failed()) return;
+  if (!initialized_) return;
+  if (const char *error=radio_error_()) {
+    ESP_LOGW(TAG,"Pairing blocked: %s",error); update_entities_(); return;
+  }
+  if (is_failed()) return;
   pair_requested_=!engine_.start_pairing(micros()); save_failed_=false; update_entities_();
 }
 void Master::on_packet(const uint8_t *data, size_t length) {
@@ -45,7 +60,7 @@ void Master::on_transmitted(bool success, uint32_t sync_end, uint32_t end) {
   engine_.completed(success,sync_end,end,millis());
 }
 void Master::loop() {
-  if (!initialized_) return;
+  if (!initialized_ || is_failed() || radio_error_()) return;
   if (pair_requested_ && engine_.start_pairing(micros())) pair_requested_=false;
   Frame frame;
   if (!hub_->transport()->busy() && engine_.next(micros(),millis(),frame)) {
@@ -55,13 +70,19 @@ void Master::loop() {
   if (millis()-last_entities_>=250) { last_entities_=millis(); update_entities_(); }
 }
 void Master::update_entities_() {
+  const char *radio_error=radio_error_();
   if (paired_) paired_->publish_state(engine_.paired());
-  if (online_) online_->publish_state(engine_.online(millis()));
-  if (pairing_) pairing_->publish_state(engine_.pairing() || pair_requested_);
+  if (online_) online_->publish_state(!radio_error && engine_.online(millis()));
+  if (pairing_) pairing_->publish_state(!radio_error && (engine_.pairing() || pair_requested_));
   char id[9];
   if (engine_.paired()) std::snprintf(id,sizeof(id),"%08X",unsigned(engine_.saved().wind));
   else id[0]=0;
   if (wind_id_ && wind_id_->state!=id) wind_id_->publish_state(id);
+  if (radio_error) {
+    const std::string message=std::string("Radio unavailable: ")+radio_error;
+    if (status_ && status_->state!=message) status_->publish_state(message);
+    return;
+  }
   const char *state="Unpaired";
   if (pair_requested_) state="Pairing requested; waiting for radio";
   else if (save_failed_) state="Paired in RAM; flash save failed";

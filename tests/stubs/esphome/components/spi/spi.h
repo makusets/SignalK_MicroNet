@@ -29,6 +29,7 @@ struct Chip {
 inline Chip chip;
 template<int, int, int, int> class SPIDevice {
  public:
+  esphome::InternalGPIOPin *cs_{nullptr};
   void spi_setup() {}
   void enable() { chip.selected=true; chip.first=true; }
   void disable() { chip.selected=false; }
