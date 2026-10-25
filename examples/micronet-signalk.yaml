@@ -1,0 +1,95 @@
+# Copy this file into ESPHome Device Builder. No repository checkout is needed.
+substitutions:
+  device_name: micronet-signalk
+  friendly_name: Micronet Signal K
+  radio_frequency: "915.915"
+  micronet_version: "8604f70fd6341b649291c8d6aac19f1ee1b82d4d"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.10.0
+  compile_process_limit: 2
+
+esp32:
+  board: lolin_d32
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: github://makusets/SignalK_MicroNet@${micronet_version}
+    components: [micronet, micronet_cc1101, micronet_master, micronet_compass, lsm303dlhc, signalk_gps]
+  - source: github://makusets/ESPHomeSignalK@3345231473cadd5184a3d4e741b86f3d7329c9c3
+    components: [signalk]
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: INFO
+
+api:
+ota:
+  - platform: esphome
+
+signalk:
+  id: sk
+  host: !secret signalk_host
+  port: 3000
+  name: ${device_name}
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+micronet:
+  id: micronet_bus
+  stale_after: 10s
+  device_type: 0x02  # Wind transducer; prevents hull/display copies overriding wind.
+
+micronet_cc1101:
+  micronet_id: micronet_bus
+  cs_pin: GPIO27
+  frequency: ${radio_frequency}
+  gdo0_pin: GPIO25  # CC1101 GDO0, required for precise TX packet timestamps.
+
+# A network ID derived from the ESP32 MAC is used and persists across reboots.
+# Pairing is explicitly started with the web button; no screen is needed.
+micronet_master:
+  id: wind_master
+  micronet_id: micronet_bus
+  paired:
+    name: Wind sensor paired
+  online:
+    name: Wind sensor online
+
+web_server:
+  port: 80
+  version: 3
+  local: true
+
+sensor:
+  - platform: micronet
+    micronet_id: micronet_bus
+    wind_speed:
+      name: "Micronet wind speed"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.wind.speedApparent
+            value: !lambda return x;
+    wind_angle:
+      name: "Micronet wind angle"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.wind.angleApparent
+            value: !lambda return x;
+
+# Optional hardware: uncomment the packages you have wired and configured.
+# ESPHome downloads these YAML packages from GitHub as well.
+# packages:
+#   gps: github://makusets/SignalK_MicroNet/packages/gps.yaml@${micronet_version}
+#   compass: github://makusets/SignalK_MicroNet/packages/compass-lsm303dlhc.yaml@${micronet_version}

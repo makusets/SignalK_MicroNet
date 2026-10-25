@@ -5,7 +5,7 @@ publishing it through [makusets/ESPHomeSignalK](https://github.com/makusets/ESPH
 The target is a **LOLIN D32 + CC1101 at 915.915 MHz**. Frequency and
 pins are configurable. GPS and a tilt-compensated magnetic compass are optional.
 
-**Status: implemented and host-tested; not hardware validated.** The decoder is tested
+**Status: ESPHome firmware builds and host tests pass; not hardware validated.** The decoder is tested
 against the documented MicroNav wind packet and malformed input. RF transmission/reception, T120 pairing, compass calibration, and a real
 Signal K connection still require bench testing.
 
@@ -53,37 +53,53 @@ Suggested wiring for an unwired LOLIN D32 (all signal levels 3.3 V):
 | GDO2 | Unconnected |
 
 Use a CC1101 module and antenna matched to your band. Set `radio_frequency` in
-`examples/lolin-d32.yaml` to `915.915` or `869.840` MHz. This is a firmware setting;
+`examples/micronet-signalk.yaml` to `915.915` or `869.840` MHz. This is a firmware setting;
 it does not change a module's physical RF matching. The driver assumes a 26 MHz
 CC1101 crystal. GPIO16 is reserved by the optional GPS example; GPIO21/22 by I2C.
 
-## Configure and build
+## Use with ESPHome
 
-Python 3.12 and a C++17 compiler are required for development. ESPHome is pinned
-in `requirements-dev.txt`. Setup creates an ignored secrets file only if absent.
+Use **ESPHome 2026.10.0 or newer**, either ESPHome Device Builder (including the
+Home Assistant add-on) or the ESPHome CLI. The device configuration is a normal
+ESPHome YAML file, like ESPHomeSignalK. ESPHome downloads both repositories'
+external components and compiles the firmware itself.
+
+1. Create a device in ESPHome Device Builder and open its YAML editor.
+2. Copy [examples/micronet-signalk.yaml](examples/micronet-signalk.yaml) into it.
+3. Set the device name, board, frequency and pins for your hardware. The defaults
+   match a LOLIN D32 with the wiring above and 915.915 MHz.
+4. Add `wifi_ssid`, `wifi_password` and `signalk_host` to your ESPHome
+   `secrets.yaml`. See [the secret names](examples/secrets.yaml.example).
+5. Choose **Install** in ESPHome. After flashing, open the device web interface
+   and press **Pair wind sensor**.
+
+The YAML is self-contained and uses GitHub `external_components` sources. There
+are no local component directories or required local YAML includes to copy.
+The optional GPS and compass packages are also fetched from GitHub when enabled.
+`micronet_version` pins the Micronet components/packages to a tested source commit;
+set it to `main` if you want to follow repository updates.
+
+For the CLI, place the YAML and your `secrets.yaml` together in any directory:
 
 ```sh
-bash tools/setup.sh
-# Edit examples/secrets.yaml: Wi-Fi SSID/password and Signal K server host.
-bash tools/check.sh --compile
-/workspace/.venvs/micronet/bin/esphome run examples/lolin-d32.yaml
+esphome config micronet-signalk.yaml
+esphome run micronet-signalk.yaml
 ```
 
-Outside the cloud environment, set `MICRONET_ENV_DIR` to your preferred virtualenv
-path, and set writable `XDG_CACHE_HOME` and `PLATFORMIO_CORE_DIR` paths when building.
-The `run` command flashes hardware and should be run on a machine with access to
-the ESP32 USB port. The example uses ESP-IDF and two build workers.
+The `run` command compiles, flashes and opens logs. ESPHome manages its ESP32
+compiler and dependencies. Repository setup scripts and a separate PlatformIO
+project are not required for installing this device.
 
 On Signal K, approve the device's access request under the server's access
 requests page. The existing ESPHomeSignalK component handles discovery,
-authentication, reconnection and publishing. This project pins it to commit
+authentication, reconnection and publishing. The example pins it to commit
 `3345231473cadd5184a3d4e741b86f3d7329c9c3`; it does not maintain a separate client.
 Its connection settings entities are available through ESPHome if needed.
-Secrets stay in `examples/secrets.yaml` and must not be committed.
+Keep credentials in your local ESPHome `secrets.yaml`.
 
 ## Data and filtering
 
-The default package publishes wind speed in m/s to
+The default configuration publishes wind speed in m/s to
 `environment.wind.speedApparent` and signed wind angle in radians to
 `environment.wind.angleApparent`. It accepts wind-transducer device type `0x02`.
 Master mode sets the receive filters to its own network and the confirmed wind
@@ -91,10 +107,14 @@ sensor. An optional `network_id` under `micronet_master` overrides the MAC-deriv
 ID; changing it starts a separate pairing namespace. For passive reception only,
 use `examples/passive.yaml` and configure the hub filters explicitly if desired.
 
-`packages/micronet-sensors.yaml` provides additional decoded measurements: water
-speed, depth below transducer, water temperature, magnetic heading, SOG/COG, and
-trip/total log. **Replace** the default wind package with this package to use it,
-and remove/change `device_type` as appropriate. Do not include both packages.
+For passive/full-network listening, `packages/micronet-sensors.yaml` provides
+additional decoded measurements: water speed, depth below transducer, water
+temperature, magnetic heading, SOG/COG, and trip/total log. Replace the portable
+YAML's wind `sensor:` block with a GitHub reference to that package and remove
+`micronet_master` when listening to an existing network. Set the hub's network
+and device filters for that deployment. The standalone master accepts one wind
+sensor. In the local development fixture, replace the `wind` package instead.
+Do not configure the same Micronet output sensors twice.
 The decoder exposes transmitter voltage as an optional sensor; no generic Signal K
 battery path is guessed for it. See [the protocol notes](docs/protocol.md).
 
@@ -105,7 +125,8 @@ calibrate with ESPHome sensor filters or Signal K as appropriate.
 
 ## Optional GPS and compass
 
-Uncomment the relevant package in `examples/lolin-d32.yaml`:
+Uncomment the relevant GitHub package at the end of
+`examples/micronet-signalk.yaml`:
 
 - `packages/gps.yaml`: any NMEA UART receiver supported by ESPHome `gps`; example
   baud rate 9600, receiver TX to GPIO16. Change pins/baud for your receiver.
@@ -144,13 +165,29 @@ See [docs/protocol.md](docs/protocol.md) for the contract and bench checks.
 
 ## Development
 
+For component contributors, `examples/lolin-d32.yaml` loads local sources and
+`examples/all-sensors.yaml` enables the local GPS/compass packages. These are
+checkout-based development fixtures; the user installation example is
+`examples/micronet-signalk.yaml`.
+
+```sh
+bash tools/setup.sh
+bash tools/check.sh --compile
+```
+
+The helper scripts install the pinned development dependencies and run tests.
+Set `MICRONET_ENV_DIR` if you want a different virtualenv directory than the cloud
+workspace default. For ordinary ESPHome installation, use the YAML workflow above.
+
 `pytest` compiles the actual protocol and compass math with AddressSanitizer and
 UndefinedBehaviorSanitizer, exercises the documented wind fixture, SI conversions,
 all single-byte corruptions/truncations, unknown fields and 41,500 malformed
 payloads. Additional tests exercise master framing, pairing phases, slot requests and
 resizes, persistence, the web button, TX completion/timeout and long preambles.
 Actual ESPHome C++ headers are checked in addition to hardware doubles. CI
-validates and compiles the base and optional-sensor ESPHome configurations. Tests are not evidence of over-the-air or on-vessel operation.
+validates the examples and compiles the local base, optional-sensor, and portable
+GitHub-sourced ESPHome configurations. Portable YAML tests run outside the checkout
+with only a YAML file and placeholder secrets. Tests are not evidence of over-the-air or on-vessel operation.
 
 Protocol interpretation and LSM303 register knowledge are based on MicroNav by
 Ronan Demoment, with compass contributions by Dietmar Warning, at commit

@@ -30,7 +30,8 @@ Real T120 testing is still required.
 ## User flow
 
 1. Wire GDO0 to GPIO25 as well as the SPI/power connections in the README.
-2. Flash `examples/lolin-d32.yaml`, join its Wi-Fi network and open the device's
+2. Compile/install `examples/micronet-signalk.yaml` through ESPHome, join its
+   Wi-Fi network and open the device's
    ESPHome web interface. All web assets are bundled locally.
 3. Place the charged T120 near the ESP32 and press **Pair wind sensor** once.
 4. Watch **Micronet status**: waking sensors, prepare (15 seconds), accepting a

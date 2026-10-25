@@ -1,3 +1,4 @@
+# Local development fixture. For ESPHome Device Builder, use micronet-signalk.yaml.
 substitutions:
   radio_frequency: "915.915"
 

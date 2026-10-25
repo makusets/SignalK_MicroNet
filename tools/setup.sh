@@ -12,3 +12,4 @@ fi
 "$MICRONET_ENV_DIR/bin/esphome" config examples/lolin-d32.yaml >/dev/null
 "$MICRONET_ENV_DIR/bin/esphome" config examples/all-sensors.yaml >/dev/null
 "$MICRONET_ENV_DIR/bin/esphome" config examples/passive.yaml >/dev/null
+"$MICRONET_ENV_DIR/bin/esphome" config examples/micronet-signalk.yaml >/dev/null

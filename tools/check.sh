@@ -8,7 +8,9 @@ export PLATFORMIO_CORE_DIR="${PLATFORMIO_CORE_DIR:-/workspace/.platformio}"
 "$MICRONET_ENV_DIR/bin/esphome" config examples/lolin-d32.yaml >/dev/null
 "$MICRONET_ENV_DIR/bin/esphome" config examples/all-sensors.yaml >/dev/null
 "$MICRONET_ENV_DIR/bin/esphome" config examples/passive.yaml >/dev/null
+"$MICRONET_ENV_DIR/bin/esphome" config examples/micronet-signalk.yaml >/dev/null
 if [ "${1:-}" = "--compile" ]; then
   "$MICRONET_ENV_DIR/bin/esphome" compile examples/lolin-d32.yaml
   "$MICRONET_ENV_DIR/bin/esphome" compile examples/all-sensors.yaml
+  "$MICRONET_ENV_DIR/bin/esphome" compile examples/micronet-signalk.yaml
 fi
