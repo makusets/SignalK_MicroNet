@@ -1,6 +1,7 @@
 #include "components/micronet_master/engine.h"
 #include "components/micronet_master/master.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/log.h"
 #include <cassert>
 #include <iostream>
 #include <vector>
@@ -82,6 +83,16 @@ int main() {
   Engine empty; empty.initialize(NETWORK,{},0); empty.start_pairing(0);
   assert(empty.next(0,0,f)); empty.completed(false,0,1,0);
   assert(!empty.paired() && !empty.pairing() && empty.phase()==Phase::FAILED);
+  assert(empty.failure()==Failure::TX_FAILED);
+  Engine no_join; no_join.initialize(NETWORK,{},0); no_join.start_pairing(0);
+  assert(no_join.next(0,0,f)); no_join.completed(true,6000000,6003000,6003);
+  step(no_join,21003); step(no_join,81003); step(no_join,111004);
+  assert(no_join.failure()==Failure::NO_JOIN_REQUEST && no_join.last_candidate_id()==0);
+  Engine no_wind; no_wind.initialize(NETWORK,{},0); no_wind.start_pairing(0);
+  assert(no_wind.next(0,0,f)); no_wind.completed(true,6000000,6003000,6003);
+  step(no_wind,21003); no_wind.receive(req.data(),req.size(),22000);
+  step(no_wind,81003); step(no_wind,111004);
+  assert(no_wind.failure()==Failure::NO_WIND_DATA && no_wind.last_candidate_id()==WIND);
   // Ping is scheduled, but a late loop must drop it instead of transmitting
   // inside a sensor's acknowledgement slot.
   Engine timed; timed.initialize(NETWORK,saved,0); assert(timed.next(3000000,3000,f));
@@ -108,16 +119,25 @@ int main() {
   fake_time=0; fake_microseconds=0; master.setup();
   assert(!paired.state && !pairing.state);
   PairButton button; button.set_parent(&master); button.press(); assert(pairing.state);
+  assert(testlog::contains("Pair button pressed:"));
+  assert(testlog::contains("Pairing: waking sensors"));
   master.loop(); assert(radio.frame.preamble_ms==6000);
   fake_time=6003; fake_microseconds=6003000; master.on_transmitted(true,6000000,6003000);
+  fake_time=6253; fake_microseconds=6253000; master.loop();
+  assert(testlog::contains("Pairing: prepare (15 seconds)"));
+  const size_t logged=testlog::messages.size(); master.loop(); assert(testlog::messages.size()==logged);
   fake_time=21003; fake_microseconds=21003000; master.loop();
+  assert(testlog::contains("Pairing: accepting wind sensor (60 seconds)"));
   master.on_transmitted(true,21005375,21008000);
   master.on_packet(req.data(),req.size());
+  assert(testlog::contains("Wind join request accepted: device=02039087 payload=12"));
   fake_time=81003; fake_microseconds=81003000; master.loop();
   master.on_transmitted(true,81005375,81008000);
   master.on_packet(data.data(),data.size());
   assert(paired.state && !pairing.state && online.state && id.state=="02039087");
   assert(fake_flash.size()==1);
+  assert(testlog::contains("Pairing: confirming wind data"));
+  assert(testlog::contains("Wind pairing confirmed: network=83037737 device=02039087"));
   micronet::Micronet hub2; hub2.set_transport(&radio);
   Master restored; restored.set_hub(&hub2); restored.set_network_id(NETWORK);
   binary_sensor::BinarySensor restored_paired; restored.set_paired(&restored_paired); restored.setup();

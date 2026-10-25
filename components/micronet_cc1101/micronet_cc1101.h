@@ -23,6 +23,7 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   float get_setup_priority() const override { return setup_priority::HARDWARE; }
  protected:
   static void IRAM_ATTR edge_(MicronetCC1101 *self);
+  void log_diagnostics_();
   void service_tx_();
   void finish_tx_(bool success);
   void write_fifo_(const uint8_t *data, size_t length);
@@ -44,7 +45,7 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   uint8_t packet_[micronet::MAX_PACKET]{};
   size_t used_{0}, expected_{0};
   bool reception_started_{false};
-  uint32_t started_{0}, overflows_{0}, timeouts_{0};
+  uint32_t started_{0}, overflows_{0}, timeouts_{0}, header_rejects_{0}, rx_frames_{0}, last_diagnostics_{0};
   HighFrequencyLoopRequester fast_loop_;
 };
 }}

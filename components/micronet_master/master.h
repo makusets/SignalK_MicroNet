@@ -26,6 +26,7 @@ class Master : public Component, public micronet::PacketListener {
   void on_transmitted(bool success, uint32_t sync_end, uint32_t end) override;
  protected:
   const char *radio_error_() const;
+  void report_status_(const char *state);
   void update_entities_();
   void save_pair_();
   struct Record { uint32_t version,network,wind,payload; };
@@ -33,6 +34,7 @@ class Master : public Component, public micronet::PacketListener {
   uint32_t network_id_{0},last_entities_{0};
   bool initialized_{false},save_failed_{false},pair_requested_{false};
   Engine engine_;
+  std::string logged_status_;
   ESPPreferenceObject preference_;
   binary_sensor::BinarySensor *paired_{nullptr},*online_{nullptr},*pairing_{nullptr};
   text_sensor::TextSensor *status_{nullptr},*wind_id_{nullptr};

@@ -24,7 +24,12 @@ wifi:
   password: !secret wifi_password
 
 logger:
-  level: INFO
+  level: DEBUG
+  initial_level: INFO
+  logs:
+    micronet: DEBUG
+    micronet_master: DEBUG
+    micronet_cc1101: DEBUG
 
 api:
 ota:

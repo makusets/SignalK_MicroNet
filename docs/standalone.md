@@ -53,6 +53,17 @@ entity; it is not silently presented as persisted.
 separately through the hub's `stale_after` setting. Optional local GPS and compass
 continue to publish directly to Signal K; they are not transmitted onto Micronet.
 
+## Pairing diagnostics
+
+See the README's logging configuration. Stage transitions and join/confirmation
+are logged at INFO, and actual queued TX / received RX packets at DEBUG. RX is
+logged before hub filters, including traffic that is not published. A radio
+summary appears every five seconds even in silence. Failed confirmation retains
+the last candidate ID in the failure log and distinguishes no join request from
+an admitted sensor that never supplied usable wind data. No log asserts remote
+reception solely from local TX completion. The 76.8 kbaud correction is required;
+older firmware using a data-rate exponent of 10 transmitted at half that rate.
+
 ## Implementation limits
 
 One wind sensor is supported. During JOIN, the first valid wind-transducer slot

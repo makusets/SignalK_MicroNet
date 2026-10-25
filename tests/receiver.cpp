@@ -1,6 +1,7 @@
 #include "components/micronet/micronet.h"
 #include "components/micronet_cc1101/micronet_cc1101.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/log.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -17,7 +18,14 @@ int main() {
   micronet_cc1101::MicronetCC1101 radio;
   radio.set_parent(&hub); radio.set_frequency(915.915f); radio.setup();
   assert(!radio.failed && radio.ready());
-  assert(spi::chip.regs[0x10]==0x8a && spi::chip.regs[0x12]==2);
+  assert(spi::chip.regs[0x12]==2);
+  // Decode the hardware register settings independently using the datasheet
+  // equation. A register-value assertion previously blessed a half-rate modem.
+  const double programmed_baud=std::ldexp(26000000.0*(256+spi::chip.regs[0x11]),
+                                        spi::chip.regs[0x10]&0x0f)/268435456.0;
+  assert(std::fabs(programmed_baud-76800.0)<50.0);
+  const double half_rate=std::ldexp(26000000.0*(256+0x83),0x0a)/268435456.0;
+  assert(std::fabs(half_rate-76800.0)>38000.0);
   assert(spi::chip.regs[4]==0x55 && spi::chip.regs[5]==0x99);
   unsigned freq = (unsigned(spi::chip.regs[0xd])<<16) | (unsigned(spi::chip.regs[0xe])<<8) | spi::chip.regs[0xf];
   assert(std::fabs(freq*26.0/65536-915.915)<0.001);
@@ -42,7 +50,11 @@ int main() {
   for (auto b : bad) { spi::chip.fifo.push_back(b); radio.loop(); }
   radio.loop(); assert(speed.values.size()==1);
   // Network and device filters are independent of decoding validity.
+  testlog::messages.clear();
   hub.set_network_id(0x12345678); assert(!hub.receive(wind.data(),wind.size()));
+  assert(testlog::contains("RX frame network=83037737 device=02039087 type=02"));
+  assert(testlog::contains("raw=83 03 77 37 02 03 90 87"));
+  assert(testlog::contains("RX not published: measurement filter"));
   hub.set_network_id(0x83037737); hub.set_device_type(1); assert(!hub.receive(wind.data(),wind.size()));
   hub.set_device_type(2); hub.set_device_id(123); assert(!hub.receive(wind.data(),wind.size()));
   hub.set_device_id(0x02039087);
@@ -77,15 +89,19 @@ int main() {
   assert(radio.transmit(ping.data(),ping.size(),6000)); assert(radio.busy());
   assert(!radio.transmit(ping.data(),ping.size(),0));
   assert(spi::chip.tx_fifo.empty());
+  assert(testlog::contains("TX queued")); assert(testlog::contains("TX start: preamble=6000 ms"));
   fake_microseconds=5000000; radio.loop(); assert(spi::chip.tx_fifo.empty());
   fake_microseconds=6001000; radio.loop(); assert(spi::chip.tx_fifo.size()==14);
   assert(std::equal(spi::chip.tx_fifo.begin(),spi::chip.tx_fifo.end(),ping.begin()));
   fake_microseconds=6001200; pin.level(true);
   fake_microseconds=6003000; pin.level(false); radio.loop();
+  assert(testlog::contains("TX complete: sync_us=6001200 end_us=6003000"));
   assert(listener.completed==1 && listener.success && listener.sync==6001200 && listener.end==6003000 && !radio.busy());
   assert(radio.transmit(ping.data(),ping.size(),0));
   fake_microseconds+=50001; radio.loop();
   assert(listener.completed==2 && !listener.success && !radio.busy());
+  assert(testlog::contains("TX failed: completion timeout"));
+  fake_time+=5000; radio.loop(); assert(testlog::contains("Radio summary: RX frames="));
   // Reproduce the user's startup log: a low/absent SPI response must never
   // be advertised as a usable radio, nor accepted for transmission.
   spi::chip.regs[0x31]=0;

@@ -72,3 +72,11 @@ sync timestamps. The measured radio turnaround is included when choosing the
 next launch deadline. Asynchronous pings and alarm acknowledgements use scheduled
 slots; slots missed by more than 244 microseconds are dropped, not sent late.
 Pairing status/timings and persistence are described in [standalone.md](standalone.md).
+
+
+The modem data-rate settings are `MDMCFG4=0x8b` and `MDMCFG3=0x83`. The CC1101
+formula is `(256 + DRATE_M) * 2^DRATE_E * f_XOSC / 2^28`, giving 76,766.968 baud
+with a 26 MHz crystal. The earlier `0x8a` setting selected exponent 10 instead of
+11 and incorrectly ran at 38,383.484 baud. TX completion alone could not reveal
+that error. The regression test now derives baud from the programmed registers,
+and the startup log reports baud calculated from register readback.

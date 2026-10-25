@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "micronet.h"
+#include "packet_log.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 namespace esphome { namespace micronet {
 static const char *const TAG = "micronet";
 bool Micronet::receive(const uint8_t *data, size_t length) {
+  log_packet_debug(TAG,"RX frame",data,length);
   Decoded packet;
-  if (!decode(data, length, packet)) { ++rejected_; return false; }
+  if (!decode(data, length, packet)) {
+    ++rejected_; ESP_LOGD(TAG,"RX rejected: invalid packet length or checksum"); return false;
+  }
   if (listener_) listener_->on_packet(data, length);
   if ((filter_network_ && packet.network_id != network_id_) ||
       (filter_device_ && packet.device_id != device_id_) ||
-      (filter_type_ && uint8_t(packet.device_id >> 24) != device_type_)) { ++filtered_; return false; }
+      (filter_type_ && uint8_t(packet.device_id >> 24) != device_type_)) {
+    ++filtered_; ESP_LOGD(TAG,"RX not published: measurement filter (master still inspected the packet)"); return false;
+  }
   ++accepted_;
   ESP_LOGD(TAG, "RX network=%08X device=%08X type=%02X readings=%u", unsigned(packet.network_id),
            unsigned(packet.device_id), packet.message_id, unsigned(packet.count));

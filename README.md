@@ -179,6 +179,46 @@ reports `Radio unavailable: CC1101 SPI identification failed` in the status enti
 Correct the wiring/supply or configuration and reboot before attempting pairing.
 A saved association is retained when radio initialization fails; online remains off.
 
+## Following a pairing attempt in the logs
+
+The example compiles DEBUG logging, keeps the general runtime level at INFO,
+and enables DEBUG specifically for the Micronet components:
+
+```yaml
+logger:
+  level: DEBUG
+  initial_level: INFO
+  logs:
+    micronet: DEBUG
+    micronet_master: DEBUG
+    micronet_cc1101: DEBUG
+```
+
+On startup, check that the CC1101 reports approximately **76767 baud**, calculated
+from register readback. Earlier firmware selected a half-rate modem (38383 baud);
+update the pinned source version before investigating unsuccessful RF pairing.
+
+Press **Pair wind sensor** and follow:
+
+- INFO: wake, prepare, join and confirmation phases; selected wind sensor ID;
+  confirmed pairing and saving the association.
+- DEBUG: `TX queued` includes header fields and raw packet bytes; `TX start`
+  gives the preamble duration; `TX complete` gives hardware sync/end timestamps.
+  TX completion confirms the modem finished, not reception by the T120.
+- DEBUG: `RX frame` includes network/device IDs, message type, flags and raw bytes.
+  It is logged before measurement filtering so unpaired and foreign-network
+  packets remain visible. Rejections and ignored networks are also logged.
+- DEBUG: a radio summary every five seconds includes received-frame, rejected-
+  header, overflow and partial-packet timeout counts, including when no data arrives.
+- WARN: TX timeouts/underflow, received wind low-battery alerts, and a specific
+  pairing failure reason (no join request, no confirmed wind data, missing speed
+  or missing angle). A previous saved association is preserved after failure.
+
+The T120 is solar charged. With no display and no received telemetry, this bridge
+cannot establish its battery charge. Expose its solar panel to outdoor daylight
+and retry after charging. A received low-battery alert provides evidence of low
+charge; silence or the absence of an alert does not establish a charged battery.
+
 ## Development
 
 For component contributors, `examples/lolin-d32.yaml` loads local sources and

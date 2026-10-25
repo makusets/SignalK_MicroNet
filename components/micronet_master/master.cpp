@@ -40,11 +40,31 @@ void Master::start_pairing() {
     ESP_LOGW(TAG,"Pairing blocked: %s",error); update_entities_(); return;
   }
   if (is_failed()) return;
+  ESP_LOGI(TAG,"Pair button pressed: network=%08X",unsigned(network_id_));
   pair_requested_=!engine_.start_pairing(micros()); save_failed_=false; update_entities_();
 }
 void Master::on_packet(const uint8_t *data, size_t length) {
   if (!initialized_) return;
+  const uint32_t before=engine_.candidate_id();
   engine_.receive(data,length,millis());
+  if (length>=14) {
+    const uint32_t source=micronet::be32(data+4);
+    if (micronet::be32(data)!=network_id_) {
+      ESP_LOGD(TAG,"RX ignored: network=%08X expected=%08X",unsigned(micronet::be32(data)),unsigned(network_id_));
+    } else if (uint8_t(source>>24)!=2) {
+      ESP_LOGD(TAG,"RX ignored: device=%08X is not a wind transducer",unsigned(source));
+    } else if (data[8]==3) {
+      if (engine_.candidate_id()==source && engine_.candidate_id()!=before)
+        ESP_LOGI(TAG,"Wind join request accepted: device=%08X payload=%u",unsigned(source),engine_.candidate_payload());
+      else ESP_LOGD(TAG,"Wind join request: device=%08X selected=%08X (may be duplicate, invalid or outside join phase)",
+        unsigned(source),unsigned(engine_.candidate_id()));
+    } else if (data[8]==2 && engine_.candidate_id()==source) {
+      ESP_LOGD(TAG,"Candidate wind data: device=%08X confirmation_mask=%u (speed=1 angle=2)",unsigned(source),engine_.confirmation_mask());
+    }
+    if (data[8]==6 && length>=18 && data[14]==0xe2 && data[15]==9 &&
+        micronet::checksum(data+14,length-15)==data[length-1])
+      ESP_LOGW(TAG,"Wind low-battery alert received from device=%08X",unsigned(source));
+  }
   if (engine_.take_changed()) {
     hub_->set_device_id(engine_.saved().wind);
     save_pair_(); update_entities_();
@@ -52,6 +72,8 @@ void Master::on_packet(const uint8_t *data, size_t length) {
 }
 void Master::save_pair_() {
   const auto &p=engine_.saved();
+  ESP_LOGI(TAG,"Wind pairing confirmed: network=%08X device=%08X payload=%u; saving association",
+    unsigned(p.network),unsigned(p.wind),p.payload);
   Record record{1,p.network,p.wind,p.payload};
   save_failed_=!preference_.save(&record) || !global_preferences->sync();
   if (save_failed_) ESP_LOGE(TAG,"Pairing works in RAM but flash save failed; retry pairing before reboot");
@@ -69,6 +91,15 @@ void Master::loop() {
   }
   if (millis()-last_entities_>=250) { last_entities_=millis(); update_entities_(); }
 }
+void Master::report_status_(const char *state) {
+  if (logged_status_!=state) {
+    if (engine_.failure()!=Failure::NONE) {
+      ESP_LOGW(TAG,"%s (last candidate=%08X)",state,unsigned(engine_.last_candidate_id()));
+    } else ESP_LOGI(TAG,"%s",state);
+    logged_status_=state;
+  }
+  if (status_ && status_->state!=state) status_->publish_state(state);
+}
 void Master::update_entities_() {
   const char *radio_error=radio_error_();
   if (paired_) paired_->publish_state(engine_.paired());
@@ -80,12 +111,22 @@ void Master::update_entities_() {
   if (wind_id_ && wind_id_->state!=id) wind_id_->publish_state(id);
   if (radio_error) {
     const std::string message=std::string("Radio unavailable: ")+radio_error;
-    if (status_ && status_->state!=message) status_->publish_state(message);
+    report_status_(message.c_str());
     return;
   }
   const char *state="Unpaired";
   if (pair_requested_) state="Pairing requested; waiting for radio";
   else if (save_failed_) state="Paired in RAM; flash save failed";
+  else if (engine_.failure()!=Failure::NONE) {
+    switch (engine_.failure()) {
+      case Failure::TX_FAILED: state="Pairing failed: radio transmission failed"; break;
+      case Failure::NO_JOIN_REQUEST: state="Pairing timed out: no wind sensor join request"; break;
+      case Failure::NO_WIND_DATA: state="Pairing timed out: sensor joined but no confirmed wind data"; break;
+      case Failure::MISSING_SPEED: state="Pairing timed out: wind speed missing"; break;
+      case Failure::MISSING_ANGLE: state="Pairing timed out: wind angle missing"; break;
+      default: break;
+    }
+  }
   else switch (engine_.phase()) {
     case Phase::WAKE: state=engine_.pairing()?"Pairing: waking sensors":"Waking paired sensor"; break;
     case Phase::WAIT: state="Pairing: prepare (15 seconds)"; break;
@@ -95,7 +136,7 @@ void Master::update_entities_() {
     case Phase::FAILED: state="Pairing failed; no confirmed wind sensor"; break;
     default: break;
   }
-  if (status_ && status_->state!=state) status_->publish_state(state);
+  report_status_(state);
 }
 void Master::dump_config() {
   ESP_LOGCONFIG(TAG,"Standalone Micronet master network=%08X; missed async windows=%u",unsigned(network_id_),unsigned(engine_.missed_windows()));

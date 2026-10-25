@@ -41,6 +41,7 @@ inline uint32_t slot_us(uint8_t payload) {
   uint32_t raw=1771+1456+104*uint32_t(payload)+1893;
   return ((raw+243)/244)*244;
 }
+enum class Failure { NONE, TX_FAILED, NO_JOIN_REQUEST, NO_WIND_DATA, MISSING_SPEED, MISSING_ANGLE };
 enum class Phase { IDLE, WAKE, WAIT, JOIN, CONFIRM, RUNNING, FAILED };
 class Engine {
  public:
@@ -52,7 +53,7 @@ class Engine {
   bool start_pairing(uint32_t now_us) {
     if (pairing()) return true;
     if (awaiting_) return false;
-    candidate_={}; wind_mask_=0; pairing_requested_=true; changed_=false;
+    candidate_={}; wind_mask_=0; failure_=Failure::NONE; last_candidate_=0; pairing_requested_=true; changed_=false;
     phase_=Phase::WAKE; next_poll_=now_us; async_pending_=false; return true;
   }
   bool pairing() const { return pairing_requested_; }
@@ -61,6 +62,10 @@ class Engine {
   const Pairing &saved() const { return saved_; }
   Phase phase() const { return phase_; }
   uint32_t candidate_id() const { return candidate_.wind; }
+  uint32_t last_candidate_id() const { return last_candidate_; }
+  uint8_t candidate_payload() const { return candidate_.payload; }
+  uint8_t confirmation_mask() const { return wind_mask_; }
+  Failure failure() const { return failure_; }
   bool take_changed() { bool c=changed_; changed_=false; return c; }
   uint32_t missed_windows() const { return missed_; }
   // One call emits at most one packet. Missed async slots are dropped, never
@@ -71,7 +76,17 @@ class Engine {
     if (phase_==Phase::JOIN && now_ms-phase_ms_>=60000) {
       phase_=Phase::CONFIRM; phase_ms_=now_ms; wind_mask_=0; normal_poll_sent_=false;
     }
-    if (phase_==Phase::CONFIRM && now_ms-phase_ms_>=30000) fail_pairing_();
+    if (phase_==Phase::CONFIRM && now_ms-phase_ms_>=30000) {
+      Failure failure=Failure::NO_JOIN_REQUEST;
+      if (candidate_.wind) {
+        failure=Failure::NO_WIND_DATA;
+        if (now_ms-last_candidate_ms_<=5000) {
+          if (wind_mask_==1) failure=Failure::MISSING_ANGLE;
+          else if (wind_mask_==2) failure=Failure::MISSING_SPEED;
+        }
+      }
+      fail_pairing_(failure);
+    }
     if (phase_==Phase::IDLE || phase_==Phase::FAILED) return false;
     if (async_pending_ && reached(now_us,async_at_)) {
       async_pending_=false;
@@ -96,7 +111,7 @@ class Engine {
     if (!awaiting_) return;
     awaiting_=false;
     if (!success) {
-      if (pairing()) fail_pairing_();
+      if (pairing()) fail_pairing_(Failure::TX_FAILED);
       else { next_poll_=end_us+1000000; phase_=saved_.valid()?Phase::WAKE:Phase::FAILED; }
       return;
     }
@@ -158,12 +173,15 @@ class Engine {
     return 9;
   }
   Pairing target_() const { return candidate_.wind && pairing_requested_?candidate_:saved_; }
-  void fail_pairing_() {
+  void fail_pairing_(Failure failure) {
+    failure_=failure; last_candidate_=candidate_.wind;
     pairing_requested_=false; candidate_={}; wind_mask_=0; async_pending_=false;
     phase_=saved_.valid()?Phase::RUNNING:Phase::FAILED;
   }
   Pairing saved_{},candidate_{};
   Phase phase_{Phase::IDLE};
+  Failure failure_{Failure::NONE};
+  uint32_t last_candidate_{0};
   uint32_t network_{0}, next_poll_{0}, phase_ms_{0}, async_at_{0},ack_at_{0};
   uint32_t launched_us_{0},turnaround_us_{500};
   bool long_preamble_{false};
