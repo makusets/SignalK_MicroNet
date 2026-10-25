@@ -6,6 +6,8 @@
 #include <cmath>
 #include <iostream>
 #include <vector>
+#include <cstring>
+static unsigned logging_requires_rx_start=0;
 using namespace esphome;
 int main() {
   micronet::Micronet hub;
@@ -105,25 +107,44 @@ int main() {
   listener.expect_rx_restart=spi::chip.rx_starts+1;
   for (auto b : ping) { spi::chip.fifo.push_back(b); radio.loop(); }
   radio.loop(); assert(listener.received==1); // Header-only RX used to strand its last byte.
+  testlog::messages.clear();
+  testlog::on_append=[](const char *,const char *line) {
+    if(std::strncmp(line,"TX",2)==0) {
+      assert(spi::chip.rx_starts>=logging_requires_rx_start);
+      // Even a slow UART logger must not delay STX or the RX restart.
+      fake_microseconds+=10000; fake_time=fake_microseconds/1000;
+    }
+  };
+  logging_requires_rx_start=spi::chip.rx_starts+1;
   fake_microseconds=1000;
   assert(radio.transmit(ping.data(),ping.size(),6000)); assert(radio.busy());
   assert(!radio.transmit(ping.data(),ping.size(),0));
   assert(spi::chip.tx_fifo.empty());
-  assert(testlog::contains("TX queued")); assert(testlog::contains("TX start: preamble=6000 ms"));
+  assert(!testlog::contains("TX frame")); // Printing is deferred until RX is active.
   fake_microseconds=5000000; radio.loop(); assert(spi::chip.tx_fifo.empty());
   fake_microseconds=6001000; radio.loop(); assert(spi::chip.tx_fifo.size()==14);
   assert(std::equal(spi::chip.tx_fifo.begin(),spi::chip.tx_fifo.end(),ping.begin()));
   fake_microseconds=6001200; pin.level(true);
   fake_microseconds=6003000; pin.level(false); radio.loop();
+  assert(testlog::contains("TX frame (deferred log)"));
+  assert(testlog::contains("TX start: preamble=6000 ms"));
   assert(testlog::contains("TX complete: sync_us=6001200 end_us=6003000"));
   assert(listener.completed==1 && listener.success && listener.sync==6001200 && listener.end==6003000 && !radio.busy());
+  logging_requires_rx_start=spi::chip.rx_starts+1;
   assert(radio.transmit(ping.data(),ping.size(),0));
   fake_microseconds+=50001; radio.loop();
   assert(listener.completed==2 && !listener.success && !radio.busy());
   assert(testlog::contains("TX failed: completion timeout"));
+  testlog::on_append=nullptr;
   fake_time+=5000; radio.loop(); assert(testlog::contains("Radio summary: RX frames="));
   // Reproduce the user's startup log: a low/absent SPI response must never
   // be advertised as a usable radio, nor accepted for transmission.
+  micronet_cc1101::MicronetCC1101 european_radio;
+  european_radio.set_parent(&hub); european_radio.set_frequency(869.840f); european_radio.setup();
+  assert(european_radio.ready());
+  const unsigned eu_word=(unsigned(spi::chip.regs[0xd])<<16)|(unsigned(spi::chip.regs[0xe])<<8)|spi::chip.regs[0xf];
+  assert(std::fabs(eu_word*26.0/65536-869.840)<0.001);
+  assert((spi::chip.regs[0x10]&15)==11 && spi::chip.regs[0x11]==0x83);
   spi::chip.regs[0x31]=0;
   micronet_cc1101::MicronetCC1101 missing_radio;
   missing_radio.set_parent(&hub); missing_radio.set_gdo0_pin(&pin); missing_radio.setup();

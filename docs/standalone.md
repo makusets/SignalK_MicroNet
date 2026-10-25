@@ -1,7 +1,8 @@
 # Standalone Micronet master and web pairing
 
-The configured hardware is a LOLIN D32, 915 MHz CC1101 and a T120 wind sensor
-previously paired with a display that is no longer available. The ESP32 now takes
+The configured hardware is a LOLIN D32, CC1101 and an 868 MHz T120 wind sensor
+previously paired with a display that is no longer available. Its Micronet channel
+is 869.840 MHz; the earlier 915.915 MHz configuration did not match it. The ESP32 now takes
 the master role; the previous display and its network ID are not required for
 initiating a new pairing.
 
@@ -91,3 +92,13 @@ matching, sensor sensitivity or exact on-air timing under Wi-Fi/web load. Bench
 validation must verify pairing across reboot, old-network migration, reported
 wind values, response timing, sleep/wake recovery and reception range. A passing
 host test is not a claim that the physical T120 has been tested.
+
+
+Poll scheduling now retains a one-second grid anchored at the first captured
+sync edge; lateness from one launch is not added to every following period.
+Whole overdue periods are skipped instead of sent as a catch-up burst. TX debug
+messages are deferred until receive mode has been restored, with device timestamps
+included. GUI status publication is also deferred while the radio is busy. These
+changes address the uploaded log's 1.0104-second average polling interval; they do
+not establish a received sensor response. The T120's subsequently confirmed 868 MHz
+marking requires the independently necessary 869.840 MHz frequency correction.

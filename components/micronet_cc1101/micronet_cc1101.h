@@ -36,7 +36,7 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   uint8_t chip_part_{0xff}, chip_version_{0xff};
   uint8_t rate_exponent_{0},rate_mantissa_{0};
   double baud_{0};
-  uint32_t fill_at_{0}, tx_timeout_{0};
+  uint32_t fill_at_{0}, tx_timeout_{0}, tx_strobe_us_{0}, tx_preamble_ms_{0};
   uint8_t tx_data_[48]{};
   size_t tx_length_{0};
   void write_reg_(uint8_t address, uint8_t value);

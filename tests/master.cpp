@@ -98,6 +98,28 @@ int main() {
   Engine timed; timed.initialize(NETWORK,saved,0); assert(timed.next(3000000,3000,f));
   timed.completed(true,9000000,9003000,70000);
   assert(!timed.next(9050000,70050,f)); assert(timed.missed_windows()==1);
+  // Reproduce the log's 10 ms launch lateness. It must remain a bounded
+  // offset, not add another 10 ms of drift to every later one-second cycle.
+  for(uint32_t anchor : {9000000U,0xffff0000U}) {
+    Engine cadence; cadence.initialize(NETWORK,saved,0);
+    assert(cadence.next(3000000,3000,f));
+    cadence.completed(true,anchor,anchor+2306,9000);
+    for(unsigned i=1;i<=120;++i) {
+      const uint32_t launch=cadence.next_poll_deadline()+10000;
+      assert(cadence.next(launch,9000+i*1000,f) && f.data[8]==1);
+      const uint32_t actual_sync=launch+2375;
+      const uint32_t target=anchor+i*1000000;
+      assert(int32_t(actual_sync-target)==10000);
+      cadence.completed(true,actual_sync,actual_sync+2306,9000+i*1000);
+      assert(cadence.poll_error_us()==10000);
+      assert(cadence.poll_interval_us()==(i==1?1010000U:1000000U));
+    }
+    const uint32_t late=cadence.next_poll_deadline()+2500000;
+    assert(cadence.next(late,132000,f));
+    cadence.completed(true,late+2375,late+4681,132005);
+    assert(cadence.skipped_polls()>=2);
+    assert(!cadence.next(late+5000,132006,f)); // No catch-up burst.
+  }
   // Check the ESPHome web button, binary sensor, and flash restore integration.
   struct Radio : micronet::RadioTransport {
     Frame frame;

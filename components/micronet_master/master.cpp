@@ -79,7 +79,11 @@ void Master::save_pair_() {
   if (save_failed_) ESP_LOGE(TAG,"Pairing works in RAM but flash save failed; retry pairing before reboot");
 }
 void Master::on_transmitted(bool success, uint32_t sync_end, uint32_t end) {
+  const uint32_t before=engine_.completed_polls();
   engine_.completed(success,sync_end,end,millis());
+  if (engine_.completed_polls()!=before)
+    ESP_LOGD(TAG,"Poll timing: interval_us=%u target_error_us=%d skipped_polls=%u",
+      unsigned(engine_.poll_interval_us()),int(engine_.poll_error_us()),unsigned(engine_.skipped_polls()));
 }
 void Master::loop() {
   if (!initialized_ || is_failed() || radio_error_()) return;
@@ -89,7 +93,7 @@ void Master::loop() {
     if (!hub_->transport()->transmit(frame.data.data(),frame.length,frame.preamble_ms))
       engine_.completed(false,micros(),micros(),millis());
   }
-  if (millis()-last_entities_>=250) { last_entities_=millis(); update_entities_(); }
+  if (!hub_->transport()->busy() && millis()-last_entities_>=250) { last_entities_=millis(); update_entities_(); }
 }
 void Master::report_status_(const char *state) {
   if (logged_status_!=state) {

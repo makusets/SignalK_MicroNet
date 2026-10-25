@@ -112,3 +112,12 @@ MicronetToNMEA also sets `PKTCTRL1=0x80` (PQT=4). This preamble-quality qualifie
 is now enabled in the ESPHome CC1101 adapter to reduce false sync detections in
 noise. The low five bits remain zero: no appended status bytes, hardware CRC
 flush, or address filtering changes the data presented to the Micronet decoder.
+
+
+TX logging is deferred until RX is restored. On-air sync timestamps remain the
+source of timing evidence; client Wi-Fi log receipt times are not timing anchors.
+The master schedules on an absolute one-second grid instead of repeatedly anchoring
+to a late previous poll. Diagnostics report interval and signed target error;
+regressions cover repeated 10 ms lateness, microsecond timer wrap and skipping
+blocked periods without catch-up bursts. This is still a main-loop radio service,
+so timing under actual ESPHome/network load must be verified on hardware.

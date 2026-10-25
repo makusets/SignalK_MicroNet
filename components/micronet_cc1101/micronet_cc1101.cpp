@@ -97,7 +97,9 @@ void MicronetCC1101::read_fifo_(uint8_t *data,size_t length) {
   std::memcpy(data,transfer+1,length);
 }
 bool MicronetCC1101::transmit(const uint8_t *data,size_t length,uint32_t preamble_ms) {
-  if (!ready() || !gdo0_pin_ || transmitting_ || reception_started_ ||
+  // Busy callers can retry; do not block active TX/RX with a rejection log.
+  if (transmitting_ || reception_started_) return false;
+  if (!ready() || !gdo0_pin_ ||
       length<14 || length>sizeof(tx_data_) || preamble_ms>6000) {
     ESP_LOGW(TAG,"TX refused: ready=%s gdo0=%s busy=%s receiving=%s len=%u",
       ready()?"YES":"NO",gdo0_pin_?"YES":"NO",transmitting_?"YES":"NO",
@@ -114,19 +116,23 @@ bool MicronetCC1101::transmit(const uint8_t *data,size_t length,uint32_t preambl
   fill_at_=micros()+preamble_ms*1000;
   tx_timeout_=fill_at_+50000;
   if (!preamble_pending_) write_fifo_(tx_data_,tx_length_);
-  micronet::log_packet_debug(TAG,"TX queued",tx_data_,tx_length_);
-  ESP_LOGD(TAG,"TX start: preamble=%u ms (hardware-generated)",unsigned(preamble_ms));
+  // No logging between the scheduled launch and STX: UART/API backpressure
+  // can cost milliseconds. Emit details only after RX is restored.
+  tx_preamble_ms_=preamble_ms; tx_strobe_us_=micros();
   strobe_(0x35); // STX. With an empty FIFO, hardware emits preamble until filled.
   return true;
 }
 void MicronetCC1101::finish_tx_(bool success) {
   capture_tx_.store(false,std::memory_order_release);
   uint32_t sync=sync_end_us_.load(),end=success?tx_end_us_.load():micros();
+  transmitting_=false; preamble_pending_=false;
+  restart_(); // RX must be active before any logger or application callback.
+  parent_->transmitted(success,sync,end);
+  micronet::log_packet_debug(TAG,"TX frame (deferred log)",tx_data_,tx_length_);
+  ESP_LOGD(TAG,"TX start: preamble=%u ms strobe_us=%u (deferred until RX restored)",
+    unsigned(tx_preamble_ms_),unsigned(tx_strobe_us_));
   if (success) ESP_LOGD(TAG,"TX complete: sync_us=%u end_us=%u payload_duration_us=%u",
     unsigned(sync),unsigned(end),unsigned(end-sync));
-  transmitting_=false; preamble_pending_=false;
-  restart_(); // Restore RX before invoking a listener that may schedule a reply.
-  parent_->transmitted(success,sync,end);
 }
 void MicronetCC1101::service_tx_() {
   uint32_t now=micros();
@@ -136,10 +142,12 @@ void MicronetCC1101::service_tx_() {
   if (end_seen_.load(std::memory_order_acquire)) { finish_tx_(true); return; }
   const uint8_t tx_bytes=read_reg_(0x3a);
   if (int32_t(now-tx_timeout_)>=0 || (tx_bytes&0x80)) {
+    const uint8_t state=read_reg_(0x35)&0x1f;
+    const bool sync_seen=sync_seen_.load(),end_seen=end_seen_.load();
+    finish_tx_(false);
     ESP_LOGW(TAG,"TX failed: %s sync_seen=%s end_seen=%s TXBYTES=%02X MARCSTATE=%02X",
       (tx_bytes&0x80)?"FIFO underflow":"completion timeout",
-      sync_seen_.load()?"YES":"NO",end_seen_.load()?"YES":"NO",tx_bytes,read_reg_(0x35)&0x1f);
-    finish_tx_(false);
+      sync_seen?"YES":"NO",end_seen?"YES":"NO",tx_bytes,state);
   }
 }
 void MicronetCC1101::log_diagnostics_() {
@@ -150,7 +158,6 @@ void MicronetCC1101::log_diagnostics_() {
     unsigned(unstable_samples_),unsigned(deferred_reads_),transmitting_?"YES":"NO");
 }
 void MicronetCC1101::loop() {
-  log_diagnostics_();
   if (transmitting_) { service_tx_(); return; }
   // Poll fast enough to drain the 64-byte FIFO during packets up to 96 bytes.
   // Leave one byte while receiving (CC1101 RX FIFO erratum); drain the final
@@ -172,6 +179,7 @@ void MicronetCC1101::loop() {
   }
   if (!stable) { ++deferred_reads_; return; }
   count &= 0x7f;
+  if (!count && !reception_started_) log_diagnostics_();
   if (count > 64) { ++overflows_; ESP_LOGD(TAG,"RX FIFO invalid count=%u",count); restart_(); return; }
   if (count && !reception_started_) { started_ = millis(); reception_started_ = true; }
   bool complete = expected_ && used_ + count >= expected_;

@@ -2,7 +2,7 @@
 
 An ESPHome project for receiving Raymarine/Tacktick Micronet wind data and
 publishing it through [makusets/ESPHomeSignalK](https://github.com/makusets/ESPHomeSignalK).
-The target is a **LOLIN D32 + CC1101 at 915.915 MHz**. Frequency and
+The target is a **LOLIN D32 + CC1101 at 869.840 MHz (868 MHz Micronet)**. Frequency and
 pins are configurable. GPS and a tilt-compensated magnetic compass are optional.
 
 **Status: ESPHome firmware builds and host tests pass; not hardware validated.** The decoder is tested
@@ -52,7 +52,8 @@ Suggested wiring for an unwired LOLIN D32 (all signal levels 3.3 V):
 | GDO0 | GPIO25 (required for master timing) |
 | GDO2 | Unconnected |
 
-Use a CC1101 module and antenna matched to your band. Set `radio_frequency` in
+The owner's T120 is the 868 MHz model, so the example defaults to **869.840 MHz**.
+A previous 915.915 MHz setting did not match that sensor. Use a CC1101 module and antenna matched to your band. Set `radio_frequency` in
 `examples/micronet-signalk.yaml` to `915.915` or `869.840` MHz. This is a firmware setting;
 it does not change a module's physical RF matching. The driver assumes a 26 MHz
 CC1101 crystal. GPIO16 is reserved by the optional GPS example; GPIO21/22 by I2C.
@@ -67,7 +68,7 @@ external components and compiles the firmware itself.
 1. Create a device in ESPHome Device Builder and open its YAML editor.
 2. Copy [examples/micronet-signalk.yaml](examples/micronet-signalk.yaml) into it.
 3. Set the device name, board, frequency and pins for your hardware. The defaults
-   match a LOLIN D32 with the wiring above and 915.915 MHz.
+   match a LOLIN D32 with the wiring above and 869.840 MHz.
 4. Add `wifi_ssid`, `wifi_password` and `signalk_host` to your ESPHome
    `secrets.yaml`. See [the secret names](examples/secrets.yaml.example).
 5. Choose **Install** in ESPHome. After flashing, open the device web interface
@@ -211,8 +212,11 @@ Press **Pair wind sensor** and follow:
 
 - INFO: wake, prepare, join and confirmation phases; selected wind sensor ID;
   confirmed pairing and saving the association.
-- DEBUG: `TX queued` includes header fields and raw packet bytes; `TX start`
-  gives the preamble duration; `TX complete` gives hardware sync/end timestamps.
+- DEBUG: `TX frame (deferred log)` includes header fields and raw packet bytes;
+  `TX start` gives the preamble duration and device strobe timestamp; `TX complete`
+  gives hardware sync/end timestamps. These are printed after RX is restored so
+  logger delays cannot postpone STX or returning to receive mode. `Poll timing`
+  reports the hardware sync interval, target error and skipped whole periods.
   TX completion confirms the modem finished, not reception by the T120.
 - DEBUG: `RX frame` includes network/device IDs, message type, flags and raw bytes.
   It is logged before measurement filtering so unpaired and foreign-network

@@ -54,7 +54,7 @@ class Engine {
     if (pairing()) return true;
     if (awaiting_) return false;
     candidate_={}; wind_mask_=0; failure_=Failure::NONE; last_candidate_=0; pairing_requested_=true; changed_=false;
-    phase_=Phase::WAKE; next_poll_=now_us; async_pending_=false; return true;
+    phase_=Phase::WAKE; next_poll_=now_us; have_grid_=false; have_last_sync_=false; async_pending_=false; return true;
   }
   bool pairing() const { return pairing_requested_; }
   bool paired() const { return saved_.valid(); }
@@ -68,6 +68,11 @@ class Engine {
   Failure failure() const { return failure_; }
   bool take_changed() { bool c=changed_; changed_=false; return c; }
   uint32_t missed_windows() const { return missed_; }
+  uint32_t next_poll_deadline() const { return next_poll_; }
+  uint32_t completed_polls() const { return completed_polls_; }
+  uint32_t poll_interval_us() const { return poll_interval_us_; }
+  int32_t poll_error_us() const { return poll_error_us_; }
+  uint32_t skipped_polls() const { return skipped_polls_; }
   // One call emits at most one packet. Missed async slots are dropped, never
   // sent late into another device's response slot. Unsigned clocks may wrap.
   bool next(uint32_t now_us, uint32_t now_ms, Frame &frame) {
@@ -116,15 +121,27 @@ class Engine {
       return;
     }
     if (pending_!=1) return;
+    ++completed_polls_;
+    poll_interval_us_=have_last_sync_?sync_end_us-last_sync_us_:0;
+    last_sync_us_=sync_end_us; have_last_sync_=true;
+    poll_error_us_=have_grid_?int32_t(sync_end_us-next_sync_us_):0;
+    if (!have_grid_) { next_sync_us_=sync_end_us; have_grid_=true; }
+    next_sync_us_+=1000000;
     if (phase_==Phase::WAKE) {
       phase_=pairing_requested_?Phase::WAIT:Phase::RUNNING; phase_ms_=now_ms;
     }
     if (phase_==Phase::CONFIRM) normal_poll_sent_=true;
     if (!long_preamble_) {
       uint32_t observed=sync_end_us-launched_us_;
-      if (observed>=1875 && observed<6875) turnaround_us_=(turnaround_us_+observed-1875)/2;
+      if (observed>=1875 && observed<50000) turnaround_us_=(turnaround_us_+observed-1875)/2;
     }
-    next_poll_=sync_end_us+1000000-1875-turnaround_us_; // Hardware preamble + 0x5599 sync.
+    // Keep a fixed grid instead of adding every late launch to the next
+    // period. If the loop was blocked for whole periods, skip rather than burst.
+    next_poll_=next_sync_us_-1875-turnaround_us_;
+    if (reached(end_us,next_poll_)) {
+      const uint32_t skip=(end_us-next_poll_)/1000000+1;
+      skipped_polls_+=skip; next_sync_us_+=skip*1000000; next_poll_+=skip*1000000;
+    }
     // Anchor slots to the captured sync edge, not to a delayed ESPHome loop.
     async_at_=sync_end_us+slot_us(advertised_master_payload_)+slot_us(advertised_payload_)+7200-1771-turnaround_us_;
     ack_at_=async_at_+7200+(advertised_wind_?5328:0);
@@ -183,6 +200,9 @@ class Engine {
   Failure failure_{Failure::NONE};
   uint32_t last_candidate_{0};
   uint32_t network_{0}, next_poll_{0}, phase_ms_{0}, async_at_{0},ack_at_{0};
+  uint32_t next_sync_us_{0},last_sync_us_{0},poll_interval_us_{0},completed_polls_{0},skipped_polls_{0};
+  int32_t poll_error_us_{0};
+  bool have_grid_{false},have_last_sync_{false};
   uint32_t launched_us_{0},turnaround_us_{500};
   bool long_preamble_{false};
   uint32_t last_ping_ms_{0},last_saved_ms_{0},last_candidate_ms_{0},missed_{0},advertised_wind_{0};
