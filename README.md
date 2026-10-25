@@ -2,26 +2,40 @@
 
 An ESPHome project for receiving Raymarine/Tacktick Micronet wind data and
 publishing it through [makusets/ESPHomeSignalK](https://github.com/makusets/ESPHomeSignalK).
-The initial target is a **LOLIN D32 + CC1101 at 915.915 MHz**. Frequency and
+The target is a **LOLIN D32 + CC1101 at 915.915 MHz**. Frequency and
 pins are configurable. GPS and a tilt-compensated magnetic compass are optional.
 
-**Status: initial implementation, not hardware validated.** The decoder is tested
-against the documented MicroNav wind packet and malformed input. RF reception,
-compass calibration, and a real Signal K connection still require bench testing.
+**Status: implemented and host-tested; not hardware validated.** The decoder is tested
+against the documented MicroNav wind packet and malformed input. RF transmission/reception, T120 pairing, compass calibration, and a real
+Signal K connection still require bench testing.
 
-## Wind sensor without a display
+## Standalone T120 operation
 
-Micronet uses a master that polls slave instruments once per second. This project
-currently **receives only**; it does not pair, wake a sensor, emit master requests,
-or transmit local GPS/compass data onto Micronet. A paired, awake Micronet display
-must already be operating the network for ordinary wind capture.
+The ESP32 now runs the Micronet master, so **a master display is not required**.
+It creates a stable network ID from its MAC address, wakes the network using a
+six-second radio preamble and polls the paired wind sensor once per second.
+The implementation follows the published Micronet master/pairing sequence;
+**operation with a physical T120 still needs bench verification**.
 
-Your current hardware has only a wind sensor. Passive reception alone therefore
-is **not a complete standalone solution**. [MicroNav](https://github.com/Rodemfr/MicroNav)
-also requires a display: it implements a participating slave, not a replacement
-master. Standalone polling/pairing needs further protocol research and hardware
-captures; it is tracked in [docs/standalone.md](docs/standalone.md). No speculative
-transmit sequence is enabled in this firmware.
+In the ESPHome web interface, press **Pair wind sensor**. Pairing runs through
+wake-up, a 15-second preparation phase and a 60-second join phase, followed by
+confirmation with actual wind speed and angle. Keep the charged T120 near the
+receiver during pairing. Allow up to about two minutes. The sensor's old display
+is not needed; pairing invites it onto the ESP32's network.
+
+- **Wind sensor paired**: binary sensor indicating an established association.
+  It restores from flash after reboot and stays on when the sensor is asleep.
+- **Wind sensor online**: binary sensor indicating wind data received within ten
+  seconds. This is separate from pairing status.
+- **Wind sensor pairing**: binary sensor indicating an active pairing attempt.
+- **Micronet status**: pairing progress, waiting/receiving state or failure.
+- **Wind sensor ID**: the associated sensor's ID.
+
+A slot request alone does not set paired status. The new association is committed
+to ESP32 preferences only after valid wind data arrives following normal polling
+at the end of the join phase. Failed attempts preserve the previous association.
+Only one wind sensor is supported; pair with your intended T120 nearby.
+See [docs/standalone.md](docs/standalone.md) for protocol evidence and limitations.
 
 ## Hardware
 
@@ -35,7 +49,8 @@ Suggested wiring for an unwired LOLIN D32 (all signal levels 3.3 V):
 | MOSI | GPIO23 |
 | MISO | GPIO19 |
 | CSN | GPIO27 |
-| GDO0 / GDO2 | Unconnected (FIFO is polled) |
+| GDO0 | GPIO25 (required for master timing) |
+| GDO2 | Unconnected |
 
 Use a CC1101 module and antenna matched to your band. Set `radio_frequency` in
 `examples/lolin-d32.yaml` to `915.915` or `869.840` MHz. This is a firmware setting;
@@ -71,9 +86,10 @@ Secrets stay in `examples/secrets.yaml` and must not be committed.
 The default package publishes wind speed in m/s to
 `environment.wind.speedApparent` and signed wind angle in radians to
 `environment.wind.angleApparent`. It accepts wind-transducer device type `0x02`.
-Enable DEBUG logs to discover network and device IDs, then configure `network_id`
-and optionally `device_id` to isolate your instrument. Filters combine with AND.
-Unconfigured network filtering accepts all nearby networks.
+Master mode sets the receive filters to its own network and the confirmed wind
+sensor. An optional `network_id` under `micronet_master` overrides the MAC-derived
+ID; changing it starts a separate pairing namespace. For passive reception only,
+use `examples/passive.yaml` and configure the hub filters explicitly if desired.
 
 `packages/micronet-sensors.yaml` provides additional decoded measurements: water
 speed, depth below transducer, water temperature, magnetic heading, SOG/COG, and
@@ -116,7 +132,8 @@ sources. Optional compass/GPS are published to Signal K only.
 
 ## Radio extensibility
 
-The Micronet decoder has no CC1101 dependency. Another ESPHome radio adapter can
+The Micronet decoder has no CC1101 dependency. Master operation additionally
+requires a `RadioTransport` with asynchronous transmit completion timestamps. Another ESPHome radio adapter can
 call `Micronet::receive(data, length)` with a complete packet after sync `0x99`.
 It must implement Micronet's 2-FSK modulation, rate and framing; arbitrary LoRa or
 OOK modules are not interchangeable. Only the CC1101 adapter is implemented here.
@@ -130,11 +147,16 @@ See [docs/protocol.md](docs/protocol.md) for the contract and bench checks.
 `pytest` compiles the actual protocol and compass math with AddressSanitizer and
 UndefinedBehaviorSanitizer, exercises the documented wind fixture, SI conversions,
 all single-byte corruptions/truncations, unknown fields and 41,500 malformed
-payloads. CI also validates and compiles the base and optional-sensor ESPHome
-configurations. Tests are not evidence of over-the-air or on-vessel operation.
+payloads. Additional tests exercise master framing, pairing phases, slot requests and
+resizes, persistence, the web button, TX completion/timeout and long preambles.
+Actual ESPHome C++ headers are checked in addition to hardware doubles. CI
+validates and compiles the base and optional-sensor ESPHome configurations. Tests are not evidence of over-the-air or on-vessel operation.
 
 Protocol interpretation and LSM303 register knowledge are based on MicroNav by
 Ronan Demoment, with compass contributions by Dietmar Warning, at commit
 `abaf6f20ae1af6967b30904ee8c062b63e569f2e`. This project is a new ESPHome
 implementation, not the MicroNav firmware or its display/NMEA application.
+Master/pairing behavior is also informed by the published protocol observations
+and captures in [mnsnoop/esp32Micronet](https://github.com/mnsnoop/esp32Micronet),
+commit `92b53a6760ae31b0a419fa90e948f1630f0eb384`; no source from that project is copied.
 GPL-3.0-or-later; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

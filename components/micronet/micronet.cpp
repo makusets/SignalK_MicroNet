@@ -7,6 +7,7 @@ static const char *const TAG = "micronet";
 bool Micronet::receive(const uint8_t *data, size_t length) {
   Decoded packet;
   if (!decode(data, length, packet)) { ++rejected_; return false; }
+  if (listener_) listener_->on_packet(data, length);
   if ((filter_network_ && packet.network_id != network_id_) ||
       (filter_device_ && packet.device_id != device_id_) ||
       (filter_type_ && uint8_t(packet.device_id >> 24) != device_type_)) { ++filtered_; return false; }
@@ -30,7 +31,7 @@ void Micronet::loop() {
   }
 }
 void Micronet::dump_config() {
-  ESP_LOGCONFIG(TAG, "Micronet receive-only bridge; accepted=%u rejected=%u filtered=%u", unsigned(accepted_), unsigned(rejected_), unsigned(filtered_));
+  ESP_LOGCONFIG(TAG, "Micronet bridge; accepted=%u rejected=%u filtered=%u", unsigned(accepted_), unsigned(rejected_), unsigned(filtered_));
   if (filter_network_) ESP_LOGCONFIG(TAG, "Network filter: %08X", unsigned(network_id_));
 }
 }}

@@ -6,7 +6,7 @@ namespace esphome { namespace spi {
 constexpr int BIT_ORDER_MSB_FIRST=0, CLOCK_POLARITY_LOW=0, CLOCK_PHASE_LEADING=0, DATA_RATE_1MHZ=1;
 struct Chip {
   std::array<uint8_t,64> regs{};
-  std::deque<uint8_t> fifo;
+  std::deque<uint8_t> fifo,tx_fifo;
   bool overflow{false}, selected{false}, first{true};
   uint8_t address{0};
   unsigned flushes{0};
@@ -14,11 +14,13 @@ struct Chip {
   uint8_t transfer(uint8_t byte) {
     if (first) {
       first=false; address=byte;
+      if (byte==0x3b) tx_fifo.clear();
       if (byte==0x3a) { fifo.clear(); overflow=false; ++flushes; }
       return 0;
     }
     auto reg=address & 0x3f;
-    if (!(address & 0x80)) { regs[reg]=byte; return 0; }
+    if (!(address & 0x80)) { if(reg==0x3f) tx_fifo.push_back(byte); else regs[reg]=byte; return 0; }
+    if (reg==0x3a) return uint8_t(tx_fifo.size());
     if (reg==0x3b) return uint8_t(fifo.size()) | (overflow ? 0x80 : 0);
     if (reg==0x3f) { auto b=fifo.front(); fifo.pop_front(); return b; }
     return regs[reg];

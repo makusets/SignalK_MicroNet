@@ -60,5 +60,31 @@ int main() {
   fake_time=10000; hub.loop(); assert(std::isnan(speed.values.back()));
   for (auto b : wind) { spi::chip.fifo.push_back(b); radio.loop(); }
   radio.loop(); assert(std::isfinite(speed.values.back()));
+  // GDO0 timestamps complete TX without blocking while hardware stretches
+  // its preamble. The ESPHome loop can run throughout all six seconds.
+  struct Listener : micronet::PacketListener {
+    int received=0,completed=0; bool success=false; uint32_t sync=0,end=0;
+    void on_packet(const uint8_t*,size_t) override { ++received; }
+    void on_transmitted(bool ok,uint32_t s,uint32_t e) override { ++completed; success=ok; sync=s; end=e; }
+  } listener;
+  hub.set_listener(&listener);
+  InternalGPIOPin pin; radio.set_gdo0_pin(&pin); radio.setup();
+  auto ping=wind; ping.resize(14); ping[8]=0x0a; ping[12]=ping[13]=12;
+  ping[11]=micronet::checksum(ping.data(),11);
+  for (auto b : ping) { spi::chip.fifo.push_back(b); radio.loop(); }
+  radio.loop(); assert(listener.received==1); // Header-only RX used to strand its last byte.
+  fake_microseconds=1000;
+  assert(radio.transmit(ping.data(),ping.size(),6000)); assert(radio.busy());
+  assert(!radio.transmit(ping.data(),ping.size(),0));
+  assert(spi::chip.tx_fifo.empty());
+  fake_microseconds=5000000; radio.loop(); assert(spi::chip.tx_fifo.empty());
+  fake_microseconds=6001000; radio.loop(); assert(spi::chip.tx_fifo.size()==14);
+  assert(std::equal(spi::chip.tx_fifo.begin(),spi::chip.tx_fifo.end(),ping.begin()));
+  fake_microseconds=6001200; pin.level(true);
+  fake_microseconds=6003000; pin.level(false); radio.loop();
+  assert(listener.completed==1 && listener.success && listener.sync==6001200 && listener.end==6003000 && !radio.busy());
+  assert(radio.transmit(ping.data(),ping.size(),0));
+  fake_microseconds+=50001; radio.loop();
+  assert(listener.completed==2 && !listener.success && !radio.busy());
   std::cout << "Streaming radio, filters, expiry, timer wrap and recovery checks passed\n";
 }

@@ -47,3 +47,28 @@ reference; test 96-byte traffic, corrupt sync, partial packets and FIFO overflow
 confirm null updates after RF loss and fresh updates after recovery. Verify
 Signal K access approval, reconnect, unit conventions and optional GPS fix loss.
 No hardware validation has been performed in the cloud environment.
+
+
+## Master transport
+
+`micronet_master` observes decoded packets independently of measurement filters
+and owns the network schedule and pairing state. The hub's `RadioTransport`
+interface adds nonblocking `transmit(data, length, preamble_ms)` and completion
+notifications containing sync/end timestamps. The implemented CC1101 master TX
+packets are bounded to 48 bytes (a schedule for one wind sensor fits in 27).
+Normal reception remains bounded to 96 bytes.
+
+GDO0 uses CC1101 signal `0x06` (sync/packet end). Rising and falling edges are
+captured in an ISR using atomics. The radio uses its hardware 16-byte alternating
+preamble plus `0x5599` sync. An empty FIFO extends the preamble during waking;
+there is no six-second blocking delay. PKTLEN is set from the first length byte
+while receiving, allowing header-only ping/ACK frames to drain correctly while
+preserving the RX FIFO erratum workaround.
+
+The schedule's first entry reserves the master's own payload length; a wind
+entry reserves the requested data payload. Each entry and the header have
+additive checksums. Polling runs at one-second intervals relative to captured
+sync timestamps. The measured radio turnaround is included when choosing the
+next launch deadline. Asynchronous pings and alarm acknowledgements use scheduled
+slots; slots missed by more than 244 microseconds are dropped, not sent late.
+Pairing status/timings and persistence are described in [standalone.md](standalone.md).

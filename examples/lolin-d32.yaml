@@ -44,13 +44,27 @@ micronet:
   id: micronet_bus
   stale_after: 10s
   device_type: 0x02  # Wind transducer; prevents hull/display copies overriding wind.
-  # Discover the network ID in DEBUG logs, then uncomment to filter your boat.
-  # network_id: 0x83037737
 
 micronet_cc1101:
   micronet_id: micronet_bus
   cs_pin: GPIO27
   frequency: ${radio_frequency}
+  gdo0_pin: GPIO25  # CC1101 GDO0, required for precise TX packet timestamps.
+
+# A network ID derived from the ESP32 MAC is used and persists across reboots.
+# Pairing is explicitly started with the web button; no screen is needed.
+micronet_master:
+  id: wind_master
+  micronet_id: micronet_bus
+  paired:
+    name: Wind sensor paired
+  online:
+    name: Wind sensor online
+
+web_server:
+  port: 80
+  version: 3
+  local: true
 
 packages:
   wind: !include ../packages/wind.yaml

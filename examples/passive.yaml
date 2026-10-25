@@ -1,0 +1,4 @@
+# Listen to an existing screen's network without transmitting.
+packages:
+  base: !include lolin-d32.yaml
+micronet_master: !remove

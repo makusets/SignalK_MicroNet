@@ -13,3 +13,10 @@ https://github.com/makusets/ESPHomeSignalK
 Commit 3345231473cadd5184a3d4e741b86f3d7329c9c3.
 Upstream MIT license: Copyright (c) 2025 batuakan.
 Its license is retained in the dependency checkout.
+
+Master/pairing protocol observations and published traffic captures also consulted:
+https://github.com/mnsnoop/esp32Micronet
+Commit 92b53a6760ae31b0a419fa90e948f1630f0eb384.
+No implementation source from that project is copied or vendored.
+MicronetToNMEA reference: https://github.com/Rodemfr/MicronetToNMEA
+Commit f0a9a2f03f9aa0841dc8924594c49581f3f9599a.
