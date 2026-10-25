@@ -1,0 +1,17 @@
+# Any receiver producing NMEA sentences accepted by ESPHome's gps component.
+# Receiver TX -> GPIO16; RX is optional; common ground and correct supply required.
+uart:
+  id: gps_uart
+  rx_pin: GPIO16
+  baud_rate: 9600
+
+gps:
+  id: local_gps
+  uart_id: gps_uart
+  update_interval: 1s
+
+signalk_gps:
+  gps_id: local_gps
+  signalk_id: sk
+  stale_after: 5s
+  update_interval: 1s

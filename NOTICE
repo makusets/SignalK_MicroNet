@@ -1,0 +1,15 @@
+SignalK_MicroNet: new ESPHome implementation, 2026-10-25.
+
+Protocol interpretation and LSM303DLHC register knowledge informed by:
+MicroNav, Copyright (C) 2021 Ronan Demoment; compass contributions Dietmar Warning.
+https://github.com/Rodemfr/MicroNav
+Reference commit abaf6f20ae1af6967b30904ee8c062b63e569f2e.
+MicroNav's repository license is GPLv3 and individual source headers permit GPLv2
+or later. New implementation files in this project are GPL-3.0-or-later.
+The original MicroNav license text is included as LICENSE.
+
+ESPHomeSignalK is consumed as an external dependency, without copied source:
+https://github.com/makusets/ESPHomeSignalK
+Commit 3345231473cadd5184a3d4e741b86f3d7329c9c3.
+Upstream MIT license: Copyright (c) 2025 batuakan.
+Its license is retained in the dependency checkout.

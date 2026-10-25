@@ -1,0 +1,59 @@
+substitutions:
+  radio_frequency: "915.915"
+
+esphome:
+  name: micronet-signalk
+  friendly_name: Micronet Signal K
+  compile_process_limit: 2
+
+esp32:
+  board: lolin_d32
+  framework:
+    type: esp-idf
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+  - source: github://makusets/ESPHomeSignalK@3345231473cadd5184a3d4e741b86f3d7329c9c3
+    components: [signalk]
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: INFO
+
+api:
+ota:
+  - platform: esphome
+
+signalk:
+  id: sk
+  host: !secret signalk_host
+  port: 3000
+  name: micronet-signalk
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+micronet:
+  id: micronet_bus
+  stale_after: 10s
+  device_type: 0x02  # Wind transducer; prevents hull/display copies overriding wind.
+  # Discover the network ID in DEBUG logs, then uncomment to filter your boat.
+  # network_id: 0x83037737
+
+micronet_cc1101:
+  micronet_id: micronet_bus
+  cs_pin: GPIO27
+  frequency: ${radio_frequency}
+
+packages:
+  wind: !include ../packages/wind.yaml
+  # Uncomment only after wiring and calibrating the relevant hardware.
+  # gps: !include ../packages/gps.yaml
+  # compass: !include ../packages/compass-lsm303dlhc.yaml

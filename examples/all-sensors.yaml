@@ -1,0 +1,5 @@
+# Compile/validation example for optional hardware; do not flash unwired sensors.
+packages:
+  base: !include lolin-d32.yaml
+  gps: !include ../packages/gps.yaml
+  compass: !include ../packages/compass-lsm303dlhc.yaml

@@ -1,0 +1,45 @@
+# LSM303DLHC specifically: accelerometer 0x19, magnetometer 0x1e.
+# Other LSM303 variants use different registers and need their own driver.
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  scan: true
+
+sensor:
+  - platform: lsm303dlhc
+    magnetic_x:
+      id: mag_x
+      # Apply measured hard/soft iron calibration with ESPHome filters here.
+    magnetic_y:
+      id: mag_y
+    magnetic_z:
+      id: mag_z
+    # Convert specific force to gravity-down after aligning the board axes.
+    acceleration_x:
+      id: accel_x
+      filters:
+        - multiply: -1
+    acceleration_y:
+      id: accel_y
+      filters:
+        - multiply: -1
+    acceleration_z:
+      id: accel_z
+      filters:
+        - multiply: -1
+
+  # Any ESPHome magnetometer + accelerometer with aligned axes can feed this.
+  - platform: micronet_compass
+    name: Local magnetic heading
+    magnetic_x: mag_x
+    magnetic_y: mag_y
+    magnetic_z: mag_z
+    acceleration_x: accel_x
+    acceleration_y: accel_y
+    acceleration_z: accel_z
+    heading_offset: 0  # Mounting offset in degrees; not magnetic declination.
+    on_value:
+      - signalk.publish_delta:
+          id: sk
+          path: navigation.headingMagnetic
+          value: !lambda return x;

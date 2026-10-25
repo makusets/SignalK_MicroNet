@@ -1,0 +1,17 @@
+sensor:
+  - platform: micronet
+    micronet_id: micronet_bus
+    wind_speed:
+      name: "Micronet wind speed"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.wind.speedApparent
+            value: !lambda return x;
+    wind_angle:
+      name: "Micronet wind angle"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.wind.angleApparent
+            value: !lambda return x;

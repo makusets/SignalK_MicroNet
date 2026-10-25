@@ -1,0 +1,73 @@
+sensor:
+  - platform: micronet
+    micronet_id: micronet_bus
+    water_speed:
+      name: "Micronet water speed"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: navigation.speedThroughWater
+            value: !lambda return x;
+    depth:
+      name: "Micronet depth"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.depth.belowTransducer
+            value: !lambda return x;
+    water_temperature:
+      name: "Micronet water temperature"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.water.temperature
+            value: !lambda return x;
+    wind_speed:
+      name: "Micronet wind speed"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.wind.speedApparent
+            value: !lambda return x;
+    wind_angle:
+      name: "Micronet wind angle"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: environment.wind.angleApparent
+            value: !lambda return x;
+    heading:
+      name: "Micronet heading"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: navigation.headingMagnetic
+            value: !lambda return x;
+    speed_over_ground:
+      name: "Micronet speed over ground"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: navigation.speedOverGround
+            value: !lambda return x;
+    course_over_ground:
+      name: "Micronet course over ground"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: navigation.courseOverGroundTrue
+            value: !lambda return x;
+    trip:
+      name: "Micronet trip"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: navigation.trip.log
+            value: !lambda return x;
+    log:
+      name: "Micronet log"
+      on_value:
+        - signalk.publish_delta:
+            id: sk
+            path: navigation.log
+            value: !lambda return x;
