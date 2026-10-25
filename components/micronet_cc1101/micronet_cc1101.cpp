@@ -7,13 +7,14 @@
 namespace esphome { namespace micronet_cc1101 {
 static const char *const TAG = "micronet_cc1101";
 void MicronetCC1101::write_reg_(uint8_t address, uint8_t value) {
-  enable(); delayMicroseconds(10); transfer_byte(address); transfer_byte(value); disable();
+  uint8_t transfer[2]{address,value};
+  enable(); delayMicroseconds(10); transfer_array(transfer,sizeof(transfer)); disable();
 }
 uint8_t MicronetCC1101::read_reg_(uint8_t address) {
   enable(); delayMicroseconds(10);
   // Status registers require the burst bit even for a single read.
-  transfer_byte(address | (address >= 0x30 ? 0xc0 : 0x80));
-  uint8_t value = transfer_byte(0); disable(); return value;
+  uint8_t transfer[2]{uint8_t(address | (address >= 0x30 ? 0xc0 : 0x80)),0};
+  transfer_array(transfer,sizeof(transfer)); disable(); return transfer[1];
 }
 void MicronetCC1101::strobe_(uint8_t command) {
   enable(); delayMicroseconds(10); transfer_byte(command); disable();
@@ -39,10 +40,12 @@ void MicronetCC1101::setup() {
   }
   // 26 MHz crystal. 2-FSK, 76.77 kbaud, +/-38.09 kHz deviation,
   // 203 kHz RX bandwidth, 16/16 sync 0x5599, no whitening/CRC/address bytes.
+  // PQT=4 matches MicronetToNMEA: qualify the alternating preamble before sync,
+  // rather than accepting random sync matches from an ungated noise stream.
   const uint8_t config[][2] = {
     {0x00, 0x2e}, {0x01, 0x2e}, {0x02, 0x2e}, // GDOs high impedance
     {0x03, 0x07}, {0x04, 0x55}, {0x05, 0x99},
-    {0x07, 0x00}, {0x08, 0x00}, {0x0a, 0x00}, {0x0b, 0x06},
+    {0x07, 0x80}, {0x08, 0x00}, {0x0a, 0x00}, {0x0b, 0x06},
     {0x10, 0x8b}, {0x11, 0x83}, {0x12, 0x02}, {0x13, 0x22}, {0x14, 0xf8},
     {0x15, 0x44}, {0x17, 0x00}, {0x18, 0x18},
     {0x19, 0x16}, {0x1a, 0x6c}, {0x1b, 0x43}, {0x1c, 0x40}, {0x1d, 0x91},
@@ -67,10 +70,10 @@ void MicronetCC1101::setup() {
   restart_(); fast_loop_.start(); initialized_=true;
   // CC1101 data-rate equation (26 MHz crystal). Log the register readback so
   // a startup log confirms the actual programmed rate, rather than a label.
-  const uint8_t rate_exponent=read_reg_(0x10)&0x0f;
-  const uint8_t rate_mantissa=read_reg_(0x11);
-  const double baud=std::ldexp(26000000.0*(256.0+rate_mantissa),rate_exponent)/268435456.0;
-  ESP_LOGI(TAG,"CC1101 initialized: part=%02X version=%02X, %.3f MHz, %.0f baud",part,version,frequency_,baud);
+  rate_exponent_=read_reg_(0x10)&0x0f;
+  rate_mantissa_=read_reg_(0x11);
+  baud_=std::ldexp(26000000.0*(256.0+rate_mantissa_),rate_exponent_)/268435456.0;
+  ESP_LOGI(TAG,"CC1101 initialized: part=%02X version=%02X, %.3f MHz, %.0f baud",part,version,frequency_,baud_);
 }
 void IRAM_ATTR MicronetCC1101::edge_(MicronetCC1101 *self) {
   if (!self->capture_tx_.load(std::memory_order_relaxed)) return;
@@ -84,9 +87,14 @@ void IRAM_ATTR MicronetCC1101::edge_(MicronetCC1101 *self) {
   }
 }
 void MicronetCC1101::write_fifo_(const uint8_t *data,size_t length) {
-  enable(); delayMicroseconds(10); transfer_byte(0x7f);
-  for (size_t i=0;i<length;++i) transfer_byte(data[i]);
-  disable();
+  uint8_t transfer[65]{}; transfer[0]=0x7f;
+  std::memcpy(transfer+1,data,length);
+  enable(); delayMicroseconds(10); transfer_array(transfer,length+1); disable();
+}
+void MicronetCC1101::read_fifo_(uint8_t *data,size_t length) {
+  uint8_t transfer[65]{}; transfer[0]=0xff;
+  enable(); delayMicroseconds(10); transfer_array(transfer,length+1); disable();
+  std::memcpy(data,transfer+1,length);
 }
 bool MicronetCC1101::transmit(const uint8_t *data,size_t length,uint32_t preamble_ms) {
   if (!ready() || !gdo0_pin_ || transmitting_ || reception_started_ ||
@@ -137,8 +145,9 @@ void MicronetCC1101::service_tx_() {
 void MicronetCC1101::log_diagnostics_() {
   if (millis()-last_diagnostics_<5000) return;
   last_diagnostics_=millis();
-  ESP_LOGD(TAG,"Radio summary: RX frames=%u header_rejects=%u overflow=%u timeout=%u transmitting=%s",
-    unsigned(rx_frames_),unsigned(header_rejects_),unsigned(overflows_),unsigned(timeouts_),transmitting_?"YES":"NO");
+  ESP_LOGD(TAG,"Radio summary: RX frames=%u header_rejects=%u overflow=%u timeout=%u unstable_samples=%u deferred_reads=%u transmitting=%s",
+    unsigned(rx_frames_),unsigned(header_rejects_),unsigned(overflows_),unsigned(timeouts_),
+    unsigned(unstable_samples_),unsigned(deferred_reads_),transmitting_?"YES":"NO");
 }
 void MicronetCC1101::loop() {
   log_diagnostics_();
@@ -146,16 +155,33 @@ void MicronetCC1101::loop() {
   // Poll fast enough to drain the 64-byte FIFO during packets up to 96 bytes.
   // Leave one byte while receiving (CC1101 RX FIFO erratum); drain the final
   // byte after the hardware fixed-length packet counter has reached its end.
-  uint8_t count = read_reg_(0x3b), confirm = read_reg_(0x3b);
-  if ((count | confirm) & 0x80) { ++overflows_; ESP_LOGD(TAG,"RX FIFO overflow; restarting receiver"); restart_(); return; }
-  if (count != confirm) return;
+  // Expire partial packets even when no coherent FIFO count can be obtained.
+  if (reception_started_ && millis()-started_>30) {
+    ++timeouts_; ESP_LOGD(TAG,"RX timeout: received=%u expected=%u",unsigned(used_),unsigned(expected_));
+    restart_(); return;
+  }
+  uint8_t count=read_reg_(0x3b);
+  bool stable=false;
+  for (unsigned attempt=0;attempt<3;++attempt) {
+    const uint8_t confirm=read_reg_(0x3b);
+    if ((count|confirm)&0x80) {
+      ++overflows_; ESP_LOGD(TAG,"RX FIFO overflow; restarting receiver"); restart_(); return;
+    }
+    if (count==confirm) { stable=true; break; }
+    ++unstable_samples_; count=confirm;
+  }
+  if (!stable) { ++deferred_reads_; return; }
   count &= 0x7f;
   if (count > 64) { ++overflows_; ESP_LOGD(TAG,"RX FIFO invalid count=%u",count); restart_(); return; }
   if (count && !reception_started_) { started_ = millis(); reception_started_ = true; }
   bool complete = expected_ && used_ + count >= expected_;
   size_t available = complete ? count : (count ? count - 1 : 0);
-  while (available-- && used_ < sizeof(packet_)) {
-    packet_[used_++] = read_reg_(0x3f);
+  while (available && used_ < sizeof(packet_)) {
+    size_t take=available;
+    // Stop at each header boundary to program/validate length before payload.
+    const size_t boundary=used_<13?13:(used_<14?14:expected_);
+    if (take>boundary-used_) take=boundary-used_;
+    read_fifo_(packet_+used_,take); used_+=take; available-=take;
     if (used_==13) {
       // Program length before reading the duplicated length byte. Otherwise a
       // header-only ping/ACK leaves its last byte stranded by the FIFO erratum.
@@ -171,17 +197,19 @@ void MicronetCC1101::loop() {
       restart_(); return;
     }
     if (expected_ && used_ == expected_) {
-      ++rx_frames_; parent_->receive(packet_, used_); restart_(); return;
+      const size_t length=used_;
+      // Match the reference drivers: resume RX before parsing, logging, flash
+      // writes or Signal K callbacks. restart_ resets indices, not packet bytes;
+      // this loop owns the buffer until the synchronous callback returns.
+      ++rx_frames_; restart_(); parent_->receive(packet_,length); return;
     }
-  }
-  if (reception_started_ && millis() - started_ > 30) {
-    ++timeouts_; ESP_LOGD(TAG,"RX timeout: received=%u expected=%u",unsigned(used_),unsigned(expected_)); restart_();
   }
 }
 void MicronetCC1101::dump_config() {
   LOG_PIN("  CS Pin: ",this->cs_);
   LOG_PIN("  GDO0 Pin: ",gdo0_pin_);
   ESP_LOGCONFIG(TAG,"  SPI identity: part=%02X version=%02X; initialized=%s",chip_part_,chip_version_,ready()?"YES":"NO");
+  ESP_LOGCONFIG(TAG,"  Modem readback: %.0f baud (DRATE_E=%u DRATE_M=%u, 26 MHz crystal)",baud_,rate_exponent_,rate_mantissa_);
   ESP_LOGCONFIG(TAG, "Micronet CC1101 at %.3f MHz; overflow=%u timeout=%u", frequency_, unsigned(overflows_), unsigned(timeouts_));
 }
 }}

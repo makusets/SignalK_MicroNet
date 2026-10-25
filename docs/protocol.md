@@ -80,3 +80,35 @@ with a 26 MHz crystal. The earlier `0x8a` setting selected exponent 10 instead o
 11 and incorrectly ran at 38,383.484 baud. TX completion alone could not reveal
 that error. The regression test now derives baud from the programmed registers,
 and the startup log reports baud calculated from register readback.
+
+
+## FIFO service timing
+
+Register command+data bytes and FIFO bursts are sent as individual bulk SPI
+transactions. Per-byte ESP-IDF transactions can cost more than a 104 us radio
+byte, and waiting for identical FIFO counts while reading each byte separately
+can starve a live stream. Coherent RXBYTES sampling now retries up to three times
+per loop with the faster transfers. Unstable/deferred counters are logged; the
+last-byte FIFO workaround remains in force. Partial reception timeouts are
+checked before sampling so changing counts cannot bypass timeout recovery.
+A timed emulator regression streams a 96-byte packet through the 64-byte FIFO
+while charging transfer overhead and fails with the old receiver path. It is not
+a measurement of a particular board's SPI timing. Baud readback is retained and
+included in `dump_config()` so API/Wi-Fi log captures can confirm it after boot.
+
+
+Reference comparison: MicroNav's `src/Radio/SX1276MnetDriver.cpp` services FIFO
+interrupts, bursts the header, then collects the payload and pushes it through a
+message FIFO. Its radio is SX1276, not CC1101. MicronetToNMEA's CC1101
+`src/RfDriver.cpp::RfIsr_Rx` uses burst FIFO reads and changes PKTLEN after reading
+the header. It calls `RestartReception()` before publishing the completed message.
+The ESPHome adapter follows the burst-read and receive-restart ordering; its RX
+buffer is not overwritten until synchronous listeners return. GDO0 interrupts
+capture TX timestamps, but RX service still runs in the ESPHome loop. It is not a
+port of the references' interrupt-driven SPI implementation, and long blocking
+ESPHome calls can still cause lost packets.
+
+MicronetToNMEA also sets `PKTCTRL1=0x80` (PQT=4). This preamble-quality qualifier
+is now enabled in the ESPHome CC1101 adapter to reduce false sync detections in
+noise. The low five bits remain zero: no appended status bytes, hardware CRC
+flush, or address filtering changes the data presented to the Micronet decoder.

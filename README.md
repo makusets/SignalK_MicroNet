@@ -179,6 +179,14 @@ reports `Radio unavailable: CC1101 SPI identification failed` in the status enti
 Correct the wiring/supply or configuration and reboot before attempting pairing.
 A saved association is retained when radio initialization fails; online remains off.
 
+Frequent FIFO overflows with zero complete frames are a receiver problem to
+investigate; they are not evidence that the wind sensor is transmitting. The
+receiver uses bulk SPI register/FIFO transfers and bounded coherent-count retries
+to keep draining while bytes arrive. Older per-byte transactions could continually
+postpone draining until overflow. Occasional overflows can still occur when other
+components block the ESPHome loop; use the summary and packet logs to distinguish
+occasional losses from a receiver that never completes a packet.
+
 ## Following a pairing attempt in the logs
 
 The example compiles DEBUG logging, keeps the general runtime level at INFO,
@@ -194,8 +202,9 @@ logger:
     micronet_cc1101: DEBUG
 ```
 
-On startup, check that the CC1101 reports approximately **76767 baud**, calculated
-from register readback. Earlier firmware selected a half-rate modem (38383 baud);
+Check the CC1101 configuration dump for `Modem readback: 76767 baud`, calculated
+from its programmed registers. This appears when connecting to ESPHome API logs
+over Wi-Fi, even after the startup messages have passed. Earlier firmware selected a half-rate modem (38383 baud);
 update the pinned source version before investigating unsuccessful RF pairing.
 
 Press **Pair wind sensor** and follow:
@@ -209,7 +218,8 @@ Press **Pair wind sensor** and follow:
   It is logged before measurement filtering so unpaired and foreign-network
   packets remain visible. Rejections and ignored networks are also logged.
 - DEBUG: a radio summary every five seconds includes received-frame, rejected-
-  header, overflow and partial-packet timeout counts, including when no data arrives.
+  header, overflow and partial-packet timeout counts, plus unstable FIFO samples
+  and deferred reads, including when no data arrives.
 - WARN: TX timeouts/underflow, received wind low-battery alerts, and a specific
   pairing failure reason (no join request, no confirmed wind data, missing speed
   or missing angle). A previous saved association is preserved after failure.

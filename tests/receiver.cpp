@@ -18,7 +18,12 @@ int main() {
   micronet_cc1101::MicronetCC1101 radio;
   radio.set_parent(&hub); radio.set_frequency(915.915f); radio.setup();
   assert(!radio.failed && radio.ready());
+  testlog::messages.clear(); radio.dump_config();
+  assert(testlog::contains("Modem readback: 76767 baud (DRATE_E=11 DRATE_M=131"));
   assert(spi::chip.regs[0x12]==2);
+  // Enable the reference's preamble qualifier without adding CRC/address/status
+  // bytes that would change the Micronet framing exposed to the decoder.
+  assert((spi::chip.regs[0x07]>>5)==4 && (spi::chip.regs[0x07]&0x1f)==0);
   // Decode the hardware register settings independently using the datasheet
   // equation. A register-value assertion previously blessed a half-rate modem.
   const double programmed_baud=std::ldexp(26000000.0*(256+spi::chip.regs[0x11]),
@@ -72,17 +77,32 @@ int main() {
   fake_time=10000; hub.loop(); assert(std::isnan(speed.values.back()));
   for (auto b : wind) { spi::chip.fifo.push_back(b); radio.loop(); }
   radio.loop(); assert(std::isfinite(speed.values.back()));
+  // Model incoming bytes every 104 us while ESP-IDF SPI transfers consume
+  // real time. Per-byte transactions + the identical-count gate used to defer
+  // all draining until overflow. The FIFO is smaller than this 96-byte packet.
+  const size_t streamed_before=speed.values.size();
+  fake_microseconds=100000; fake_time=100;
+  spi::chip.stream(large);
+  for(int i=0;i<2000 && speed.values.size()==streamed_before;++i) radio.loop();
+  assert(speed.values.size()==streamed_before+1);
+  assert(std::isfinite(speed.values.back()));
+  assert(spi::chip.incoming.empty() && spi::chip.fifo.empty() && !spi::chip.overflow);
+  spi::chip.timed=false;
   // GDO0 timestamps complete TX without blocking while hardware stretches
   // its preamble. The ESPHome loop can run throughout all six seconds.
   struct Listener : micronet::PacketListener {
     int received=0,completed=0; bool success=false; uint32_t sync=0,end=0;
-    void on_packet(const uint8_t*,size_t) override { ++received; }
+    unsigned expect_rx_restart=0;
+    void on_packet(const uint8_t*,size_t) override {
+      assert(spi::chip.rx_starts>=expect_rx_restart); ++received;
+    }
     void on_transmitted(bool ok,uint32_t s,uint32_t e) override { ++completed; success=ok; sync=s; end=e; }
   } listener;
   hub.set_listener(&listener);
   InternalGPIOPin pin; radio.set_gdo0_pin(&pin); radio.setup();
   auto ping=wind; ping.resize(14); ping[8]=0x0a; ping[12]=ping[13]=12;
   ping[11]=micronet::checksum(ping.data(),11);
+  listener.expect_rx_restart=spi::chip.rx_starts+1;
   for (auto b : ping) { spi::chip.fifo.push_back(b); radio.loop(); }
   radio.loop(); assert(listener.received==1); // Header-only RX used to strand its last byte.
   fake_microseconds=1000;

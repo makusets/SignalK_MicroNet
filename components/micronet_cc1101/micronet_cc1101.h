@@ -27,12 +27,15 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   void service_tx_();
   void finish_tx_(bool success);
   void write_fifo_(const uint8_t *data, size_t length);
+  void read_fifo_(uint8_t *data, size_t length);
   InternalGPIOPin *gdo0_pin_{nullptr};
   ISRInternalGPIOPin isr_gdo0_;
   std::atomic<bool> capture_tx_{false}, sync_seen_{false}, end_seen_{false};
   std::atomic<uint32_t> sync_end_us_{0}, tx_end_us_{0};
   bool initialized_{false}, transmitting_{false}, preamble_pending_{false};
   uint8_t chip_part_{0xff}, chip_version_{0xff};
+  uint8_t rate_exponent_{0},rate_mantissa_{0};
+  double baud_{0};
   uint32_t fill_at_{0}, tx_timeout_{0};
   uint8_t tx_data_[48]{};
   size_t tx_length_{0};
@@ -45,7 +48,7 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   uint8_t packet_[micronet::MAX_PACKET]{};
   size_t used_{0}, expected_{0};
   bool reception_started_{false};
-  uint32_t started_{0}, overflows_{0}, timeouts_{0}, header_rejects_{0}, rx_frames_{0}, last_diagnostics_{0};
+  uint32_t started_{0}, overflows_{0}, timeouts_{0}, header_rejects_{0}, rx_frames_{0}, last_diagnostics_{0}, unstable_samples_{0}, deferred_reads_{0};
   HighFrequencyLoopRequester fast_loop_;
 };
 }}
