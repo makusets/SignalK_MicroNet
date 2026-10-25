@@ -3,7 +3,7 @@ substitutions:
   device_name: micronet-signalk
   friendly_name: Micronet Signal K
   radio_frequency: "915.915"
-  micronet_version: "644e8210cabb5497e04f810d245c681f96ce6159"
+  micronet_version: "27dd0063ce4839725010ea32f80189528f504b02"
 
 esphome:
   name: ${device_name}
