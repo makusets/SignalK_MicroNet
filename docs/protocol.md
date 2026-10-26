@@ -58,16 +58,35 @@ notifications containing sync/end timestamps. The implemented CC1101 master TX
 packets are bounded to 48 bytes (a schedule for one wind sensor fits in 27).
 Normal reception remains bounded to 96 bytes.
 
-GDO0 uses CC1101 signal `0x06` (sync/packet end). Rising and falling edges are
-captured in an ISR using atomics. The radio uses its hardware 16-byte alternating
-preamble plus `0x5599` sync. An empty FIFO extends the preamble during waking;
-there is no six-second blocking delay. PKTLEN is set from the first length byte
-while receiving, allowing header-only ping/ACK frames to drain correctly while
-preserving the RX FIFO erratum workaround.
+TX disables automatic preamble/sync (`MDMCFG2.SYNC_MODE=0`) and puts
+sixteen literal `0x55` bytes, `0x99`, and the Micronet packet into the FIFO.
+The wake burst uses enough literal `0x55` bytes for at least six seconds at the
+read-back baud rate. This matches MicroNav's selected `0x55` polarity and
+MicronetToNMEA's explicit FIFO framing; the former CC1101 automatic `0xAA`
+preamble introduced a different bit transition before `0x5599`.
+
+A dedicated ESP32 FreeRTOS task (priority 20, 4096-byte stack) services TX every
+1 ms using ESPHome's 1 kHz tick. Only that task accesses this radio's SPI while
+TX is active. The 64-byte FIFO holds about 6.7 ms at this baud rate. Long bursts
+start in infinite-length mode, then switch to fixed length with fewer than 256
+bytes remaining, using the CC1101 datasheet section 15.2.2 procedure. FIFO
+underflow and completion timeout abort TX and restore RX; a stalled worker is
+not reported as a successful packet. Other devices sharing SPI must not hold
+the bus long enough to starve this FIFO.
+
+During TX, GDO0 uses inverted `PA_PD` (`0x5b`) so its edges mark RF activity even
+though hardware sync is disabled. The ISR records the end edge; the sync-end
+timestamp supplied to the scheduler is inferred by subtracting packet airtime
+at the read-back baud. PA switching delay and ISR latency remain bench timing
+uncertainties. RX restores GDO0 `0x06`, fixed length, and `0x5599` sync detection
+before completion is published to the main loop. All TX logs and application
+callbacks run there after the worker restores reception. PKTLEN is set from the
+first length byte while receiving, preserving header-only packet handling and
+the RX FIFO erratum workaround.
 
 The schedule's first entry reserves the master's own payload length; a wind
 entry reserves the requested data payload. Each entry and the header have
-additive checksums. Polling runs at one-second intervals relative to captured
+additive checksums. Polling runs at one-second intervals relative to the radio
 sync timestamps. The measured radio turnaround is included when choosing the
 next launch deadline. Asynchronous pings and alarm acknowledgements use scheduled
 slots; slots missed by more than 244 microseconds are dropped, not sent late.

@@ -80,12 +80,14 @@ The master's own ID/network ID is stable for an ESP32 MAC. YAML `network_id` can
 override it. Saved pairing records are versioned and scoped by network ID.
 A changed network ID cannot silently restore an unrelated association.
 
-The CC1101 extends its hardware-generated alternating preamble with an empty TX
-FIFO, then sends `0x5599` synchronization and the packet. This keeps the ESPHome
-loop and web UI responsive throughout the long wake burst. GDO0 ISR callbacks only
-record timestamps/flags; SPI, parsing, flash writes and publishing happen in the
-normal loop. RX is restored before TX-completion callbacks. Initial calibration
-is reused, and measured TX turnaround adjusts the next poll's launch time.
+The CC1101 transmits explicit `0x55` preamble bytes and `0x99` sync through its
+FIFO, with automatic preamble/sync disabled. A dedicated ESP32 task feeds the
+FIFO throughout the six-second wake burst, keeping the ESPHome loop and web UI
+responsive. GDO0 ISR callbacks only record RF activity timestamps; no SPI or
+logging runs in the ISR. The worker restores RX before notifying the main loop,
+which performs parsing, flash writes, publishing and TX logging. Initial
+calibration is reused. TX sync timing is inferred from the RF end edge and
+packet airtime; see [protocol.md](protocol.md#master-transport) for timing limits.
 
 Host tests cover the scheduling and state transitions, not RF power, antenna
 matching, sensor sensitivity or exact on-air timing under Wi-Fi/web load. Bench
@@ -94,11 +96,26 @@ wind values, response timing, sleep/wake recovery and reception range. A passing
 host test is not a claim that the physical T120 has been tested.
 
 
-Poll scheduling now retains a one-second grid anchored at the first captured
-sync edge; lateness from one launch is not added to every following period.
+Poll scheduling now retains a one-second grid anchored at the first radio
+sync timestamp; lateness from one launch is not added to every following period.
 Whole overdue periods are skipped instead of sent as a catch-up burst. TX debug
 messages are deferred until receive mode has been restored, with device timestamps
 included. GUI status publication is also deferred while the radio is busy. These
 changes address the uploaded log's 1.0104-second average polling interval; they do
 not establish a received sensor response. The T120's subsequently confirmed 868 MHz
 marking requires the independently necessary 869.840 MHz frequency correction.
+
+## Preamble compatibility update
+
+The two-CC1101 listener test received master control frames but no T120 response.
+That established communication between our radios, not acceptance by the T120.
+The TX framing now follows Rodemfr's explicit `0x55`/`0x99` sequence instead of
+the CC1101 automatic `0xAA` preamble. The 868 MHz PA setting also now uses TI's documented nominal 0 dBm value
+`0x50`, replacing the undocumented `0x8d` setting. The pairing phases and packet
+payloads are unchanged. This corrects a reference mismatch; it does not establish the cause
+of the T120's silence or demonstrate a successful physical pairing.
+
+After rebuilding the main unit, its Wi-Fi config dump should include
+`TX framing: explicit 0x55 preamble + 0x99 sync (FIFO worker)`. Deferred TX logs
+include the actual preamble byte count and `sync=99`. The existing passive
+listener firmware remains compatible because its receive sync is unchanged.

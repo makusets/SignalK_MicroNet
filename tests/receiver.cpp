@@ -7,6 +7,7 @@
 #include <iostream>
 #include <vector>
 #include <cstring>
+#include <algorithm>
 static unsigned logging_requires_rx_start=0;
 using namespace esphome;
 int main() {
@@ -33,6 +34,7 @@ int main() {
   assert(std::fabs(programmed_baud-76800.0)<50.0);
   const double half_rate=std::ldexp(26000000.0*(256+0x83),0x0a)/268435456.0;
   assert(std::fabs(half_rate-76800.0)>38000.0);
+  assert(spi::chip.regs[0x3e]==0x8e); // TI 915 MHz, nominal 0 dBm.
   assert(spi::chip.regs[4]==0x55 && spi::chip.regs[5]==0x99);
   unsigned freq = (unsigned(spi::chip.regs[0xd])<<16) | (unsigned(spi::chip.regs[0xe])<<8) | spi::chip.regs[0xf];
   assert(std::fabs(freq*26.0/65536-915.915)<0.001);
@@ -90,8 +92,8 @@ int main() {
   assert(std::isfinite(speed.values.back()));
   assert(spi::chip.incoming.empty() && spi::chip.fifo.empty() && !spi::chip.overflow);
   spi::chip.timed=false;
-  // GDO0 timestamps complete TX without blocking while hardware stretches
-  // its preamble. The ESPHome loop can run throughout all six seconds.
+  // Raw FIFO TX emits the reference preamble and sync. On ESP32 a dedicated
+  // task drives this pump; the host drives identical FIFO service below.
   struct Listener : micronet::PacketListener {
     int received=0,completed=0; bool success=false; uint32_t sync=0,end=0;
     unsigned expect_rx_restart=0;
@@ -116,24 +118,73 @@ int main() {
     }
   };
   logging_requires_rx_start=spi::chip.rx_starts+1;
-  fake_microseconds=1000;
-  assert(radio.transmit(ping.data(),ping.size(),6000)); assert(radio.busy());
-  assert(!radio.transmit(ping.data(),ping.size(),0));
-  assert(spi::chip.tx_fifo.empty());
-  assert(!testlog::contains("TX frame")); // Printing is deferred until RX is active.
-  fake_microseconds=5000000; radio.loop(); assert(spi::chip.tx_fifo.empty());
-  fake_microseconds=6001000; radio.loop(); assert(spi::chip.tx_fifo.size()==14);
-  assert(std::equal(spi::chip.tx_fifo.begin(),spi::chip.tx_fifo.end(),ping.begin()));
-  fake_microseconds=6001200; pin.level(true);
-  fake_microseconds=6003000; pin.level(false); radio.loop();
-  assert(testlog::contains("TX frame (deferred log)"));
-  assert(testlog::contains("TX start: preamble=6000 ms"));
-  assert(testlog::contains("TX complete: sync_us=6001200 end_us=6003000"));
-  assert(listener.completed==1 && listener.success && listener.sync==6001200 && listener.end==6003000 && !radio.busy());
+  fake_microseconds=1000; fake_time=1;
+  spi::chip.timed_tx=true;
+  auto run_tx=[&](const std::vector<uint8_t> &frame,uint32_t wake_ms) {
+    logging_requires_rx_start=spi::chip.rx_starts+1;
+    const int before_completed=listener.completed;
+    assert(radio.transmit(frame.data(),frame.size(),wake_ms));
+    assert(radio.busy() && !radio.transmit(frame.data(),frame.size(),0));
+    assert(spi::chip.regs[0x12]==0 && spi::chip.regs[0x02]==0x5b);
+    assert(spi::chip.regs[0x08]==(wake_ms?2:0));
+    assert(!testlog::contains("TX frame"));
+    pin.level(true); // Inverted PA_PD: actual RF start.
+    uint32_t rf_end=0;
+    for (int i=0;i<7000 && radio.busy();++i) {
+      // Feed every millisecond, with ESP-IDF SPI transaction costs included.
+      spi::chip.advance(1000);
+      if (spi::chip.tx_complete && pin.state.high) {
+        const uint32_t now=fake_microseconds;
+        rf_end=spi::chip.next_tx_at-104;
+        fake_microseconds=rf_end; pin.level(false); fake_microseconds=now;
+      }
+      radio.loop();
+    }
+    assert(!radio.busy() && listener.completed==before_completed+1 && listener.success);
+    assert(!spi::chip.tx_underflow && spi::chip.max_tx_fifo<=64);
+    assert(spi::chip.regs[0x12]==2 && spi::chip.regs[0x08]==0 && spi::chip.regs[0x02]==6);
+    uint32_t preamble=std::max(uint32_t(16),uint32_t(std::ceil(programmed_baud*wake_ms/8000.0)));
+    if (((preamble+1+frame.size())&255)==0) ++preamble;
+    const auto &on_air=spi::chip.emitted;
+    assert(on_air.size()==preamble+1+frame.size());
+    assert(std::all_of(on_air.begin(),on_air.begin()+preamble,[](uint8_t b){return b==0x55;}));
+    assert(on_air[preamble]==0x99);
+    assert(std::equal(frame.begin(),frame.end(),on_air.begin()+preamble+1));
+    assert(listener.end==rf_end);
+    assert(listener.end-listener.sync==uint32_t(std::lround(frame.size()*8000000.0/programmed_baud)));
+    assert(testlog::contains("TX frame (deferred log)"));
+    assert(testlog::contains("sync inferred from PA end"));
+    testlog::messages.clear();
+  };
+  run_tx(ping,6000);
+  run_tx(ping,0);
+  // Largest accepted outgoing frame crosses the 64-byte FIFO boundary.
+  auto max_tx=wind; max_tx.resize(48,0x37); max_tx[12]=max_tx[13]=46;
+  run_tx(max_tx,0);
+  // A 23-byte packet makes a six-second burst exactly divisible by 256.
+  // Add one preamble byte to avoid a zero fixed-length register. Exercise
+  // both that boundary and micros() wrap during a long transmission.
+  auto zero_length_boundary=ping; zero_length_boundary.resize(23,0x39);
+  fake_microseconds=0xffe00000U; fake_time=fake_microseconds/1000;
+  run_tx(zero_length_boundary,6000);
+  assert(spi::chip.emitted.size()==57601);
+  // A normal RX packet still decodes after switching back from raw TX.
+  listener.expect_rx_restart=spi::chip.rx_starts+1;
+  for (auto b : wind) { spi::chip.fifo.push_back(b); radio.loop(); }
+  radio.loop(); assert(listener.received==2);
+  // Starving a raw wake burst must fail explicitly, restore RX, and never
+  // report successful transmission of a truncated preamble/packet.
+  logging_requires_rx_start=spi::chip.rx_starts+1;
+  assert(radio.transmit(ping.data(),ping.size(),6000)); pin.level(true);
+  spi::chip.advance(20000); radio.loop();
+  assert(listener.completed==5 && !listener.success && !radio.busy());
+  assert(testlog::contains("TX failed: FIFO underflow"));
+  spi::chip.timed_tx=false;
+  testlog::messages.clear();
   logging_requires_rx_start=spi::chip.rx_starts+1;
   assert(radio.transmit(ping.data(),ping.size(),0));
-  fake_microseconds+=50001; radio.loop();
-  assert(listener.completed==2 && !listener.success && !radio.busy());
+  fake_microseconds+=60000; radio.loop();
+  assert(listener.completed==6 && !listener.success && !radio.busy());
   assert(testlog::contains("TX failed: completion timeout"));
   testlog::on_append=nullptr;
   fake_time+=5000; radio.loop(); assert(testlog::contains("Radio summary: RX frames="));
@@ -142,6 +193,7 @@ int main() {
   micronet_cc1101::MicronetCC1101 european_radio;
   european_radio.set_parent(&hub); european_radio.set_frequency(869.840f); european_radio.setup();
   assert(european_radio.ready());
+  assert(spi::chip.regs[0x3e]==0x50); // TI 868 MHz, nominal 0 dBm.
   const unsigned eu_word=(unsigned(spi::chip.regs[0xd])<<16)|(unsigned(spi::chip.regs[0xe])<<8)|spi::chip.regs[0xf];
   assert(std::fabs(eu_word*26.0/65536-869.840)<0.001);
   assert((spi::chip.regs[0x10]&15)==11 && spi::chip.regs[0x11]==0x83);
