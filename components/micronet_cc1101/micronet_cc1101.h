@@ -18,7 +18,7 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   void set_frequency(float frequency) { frequency_ = frequency; }
   void set_gdo0_pin(InternalGPIOPin *pin) { gdo0_pin_=pin; }
   bool transmit(const uint8_t *data, size_t length, uint32_t preamble_ms) override;
-  bool busy() const override { return transmitting_ || reception_started_; }
+  bool busy() const override { return transmitting_ || rx_busy_.load(std::memory_order_acquire); }
   bool ready() const override { return initialized_ && !is_failed(); }
   const char *failure_reason() const override { return failure_reason_; }
   void setup() override;
@@ -33,9 +33,12 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   bool pump_tx_();
   void stop_tx_(bool success);
   void fill_tx_(size_t count);
+  void receive_once_(bool background=false);
+  void queue_received_(const uint8_t *data,size_t length);
+  void dispatch_received_();
 #ifdef USE_ESP32
-  static void tx_task_(void *arg);
-  TaskHandle_t tx_task_handle_{nullptr};
+  static void radio_task_(void *arg);
+  TaskHandle_t radio_task_handle_{nullptr};
 #endif
   void finish_tx_(bool success);
   void write_fifo_(const uint8_t *data, size_t length);
@@ -46,9 +49,16 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   std::atomic<uint32_t> sync_end_us_{0}, tx_end_us_{0};
   bool initialized_{false}, transmitting_{false};
   const char *failure_reason_{"CC1101 SPI identification failed"};
-  // The worker exclusively owns SPI between notification and tx_done_.
-  // Publishing and logging remain in the ESPHome loop after RX is restored.
+  // On ESP32 the worker owns SPI continuously, including reception while the
+  // main loop logs TX completion or performs network/application work.
   std::atomic<bool> tx_done_{false};
+  std::atomic<bool> tx_requested_{false}, rx_busy_{false};
+  struct ReceivedPacket { uint8_t data[micronet::MAX_PACKET]; size_t length; };
+  static constexpr uint32_t RX_QUEUE_SIZE=4;
+  ReceivedPacket rx_queue_[RX_QUEUE_SIZE]{};
+  std::atomic<uint32_t> rx_written_{0},rx_read_{0},queue_drops_{0};
+  std::atomic<uint32_t> last_rx_fault_{0};
+  uint32_t reported_overflows_{0},reported_timeouts_{0},reported_header_rejects_{0};
   bool tx_success_{false}, tx_fixed_{false};
   uint8_t tx_error_bytes_{0}, tx_error_state_{0};
   uint32_t tx_preamble_bytes_{0}, tx_total_{0}, tx_written_{0};
@@ -67,7 +77,9 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   uint8_t packet_[micronet::MAX_PACKET]{};
   size_t used_{0}, expected_{0};
   bool reception_started_{false};
-  uint32_t started_{0}, overflows_{0}, timeouts_{0}, header_rejects_{0}, rx_frames_{0}, last_diagnostics_{0}, unstable_samples_{0}, deferred_reads_{0};
+  uint32_t started_{0},last_diagnostics_{0},last_rx_service_us_{0};
+  std::atomic<uint32_t> max_rx_service_gap_us_{0};
+  std::atomic<uint32_t> overflows_{0},timeouts_{0},header_rejects_{0},rx_frames_{0},unstable_samples_{0},deferred_reads_{0};
   HighFrequencyLoopRequester fast_loop_;
 };
 }}

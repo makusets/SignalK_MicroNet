@@ -17,7 +17,8 @@ struct Chip {
   std::vector<uint8_t> emitted;
   size_t max_tx_fifo=0;
   std::deque<uint8_t> incoming;
-  uint32_t next_byte_at=0;
+  uint32_t next_byte_at=0,rx_count=0;
+  bool pending_sync=false,rx_receiving=false;
   void advance(unsigned us) {
     if(!timed && !timed_tx) return;
     fake_microseconds+=us; fake_time=fake_microseconds/1000;
@@ -29,19 +30,24 @@ struct Chip {
       }
     }
     while(!incoming.empty() && int32_t(fake_microseconds-next_byte_at)>=0) {
-      if(fifo.size()>=64) overflow=true;
-      else fifo.push_back(incoming.front());
+      if(pending_sync) { pending_sync=false; rx_receiving=true; rx_count=0; }
+      if(rx_receiving) {
+        if(fifo.size()>=64) overflow=true;
+        else fifo.push_back(incoming.front());
+        ++rx_count;
+        if((regs[0x08]&3)==0 && rx_count>=regs[0x06]) rx_receiving=false;
+      }
       incoming.pop_front(); next_byte_at+=104;
     }
   }
   void stream(const std::vector<uint8_t> &packet) {
-    incoming.assign(packet.begin(),packet.end()); timed=true; next_byte_at=fake_microseconds+104;
+    incoming.assign(packet.begin(),packet.end()); timed=true; pending_sync=true; next_byte_at=fake_microseconds+104;
   }
   Chip() { regs[0x31]=0x14; }
   uint8_t transfer(uint8_t byte) {
     if (first) {
       first=false; address=byte;
-      if (byte==0x34) ++rx_starts;
+      if (byte==0x34) { ++rx_starts; rx_receiving=false; }
       if (byte==0x35) {
         tx_active=true; tx_count=0; tx_complete=false; emitted.clear();
         next_tx_at=fake_microseconds+104;

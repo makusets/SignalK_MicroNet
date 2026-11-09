@@ -29,6 +29,8 @@ void MicronetCC1101::restart_() {
   if (gdo0_pin_) write_reg_(0x02, 0x06); // RX sync/end signal.
   write_reg_(0x12, 0x02); // RX: 16/16 sync detection.
   used_ = expected_ = 0; reception_started_ = false;
+  rx_busy_.store(false,std::memory_order_release);
+  last_rx_service_us_=micros();
   strobe_(0x34); // SRX
 }
 void MicronetCC1101::setup() {
@@ -70,16 +72,6 @@ void MicronetCC1101::setup() {
   strobe_(0x33); delay(1); // Calibrate once, then avoid 0.8 ms recalibration jitter on every poll.
   write_reg_(0x18,0x08);
   restart_();
-#ifdef USE_ESP32
-  if (gdo0_pin_ && portTICK_PERIOD_MS>1) {
-    failure_reason_="CC1101 raw TX requires a 1 ms FreeRTOS tick";
-    ESP_LOGE(TAG,"%s",failure_reason_); mark_failed(); return;
-  }
-  if (gdo0_pin_ && xTaskCreate(tx_task_, "micronet_tx", 4096, this, 20, &tx_task_handle_) != pdPASS) {
-    failure_reason_="CC1101 TX worker allocation failed";
-    ESP_LOGE(TAG,"%s",failure_reason_); mark_failed(); return;
-  }
-#endif
   fast_loop_.start(); initialized_=true; failure_reason_=nullptr;
   // CC1101 data-rate equation (26 MHz crystal). Log the register readback so
   // a startup log confirms the actual programmed rate, rather than a label.
@@ -87,6 +79,16 @@ void MicronetCC1101::setup() {
   rate_mantissa_=read_reg_(0x11);
   baud_=std::ldexp(26000000.0*(256.0+rate_mantissa_),rate_exponent_)/268435456.0;
   ESP_LOGI(TAG,"CC1101 initialized: part=%02X version=%02X, %.3f MHz, %.0f baud",part,version,frequency_,baud_);
+#ifdef USE_ESP32
+  if (portTICK_PERIOD_MS>1) {
+    failure_reason_="CC1101 radio worker requires a 1 ms FreeRTOS tick";
+    ESP_LOGE(TAG,"%s",failure_reason_); mark_failed(); return;
+  }
+  if (xTaskCreate(radio_task_, "micronet_radio", 4096, this, 20, &radio_task_handle_) != pdPASS) {
+    failure_reason_="CC1101 radio worker allocation failed";
+    ESP_LOGE(TAG,"%s",failure_reason_); mark_failed(); return;
+  }
+#endif
 }
 void IRAM_ATTR MicronetCC1101::edge_(MicronetCC1101 *self) {
   if (!self->capture_tx_.load(std::memory_order_relaxed)) return;
@@ -110,7 +112,7 @@ void MicronetCC1101::read_fifo_(uint8_t *data,size_t length) {
   std::memcpy(data,transfer+1,length);
 }
 bool MicronetCC1101::transmit(const uint8_t *data,size_t length,uint32_t preamble_ms) {
-  if (transmitting_ || reception_started_) return false;
+  if (busy()) return false;
   if (!ready() || !gdo0_pin_ || length<14 || length>sizeof(tx_data_) || preamble_ms>6000) {
     ESP_LOGW(TAG,"TX refused: ready=%s gdo0=%s len=%u",
       ready()?"YES":"NO",gdo0_pin_?"YES":"NO",unsigned(length)); return false;
@@ -127,7 +129,8 @@ bool MicronetCC1101::transmit(const uint8_t *data,size_t length,uint32_t preambl
   tx_fixed_=tx_total_<=255; tx_done_.store(false,std::memory_order_relaxed);
   transmitting_=true;
 #ifdef USE_ESP32
-  xTaskNotifyGive(tx_task_handle_);
+  tx_requested_.store(true,std::memory_order_release);
+  xTaskNotifyGive(radio_task_handle_);
 #else
   start_tx_(); // Host behavioral tests drive the same pump explicitly.
 #endif
@@ -191,18 +194,21 @@ bool MicronetCC1101::pump_tx_() {
   return true;
 }
 #ifdef USE_ESP32
-void MicronetCC1101::tx_task_(void *arg) {
+void MicronetCC1101::radio_task_(void *arg) {
   auto *self=static_cast<MicronetCC1101 *>(arg);
   for (;;) {
-    ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-    self->start_tx_();
-    // Do not read shared state after pump publishes completion: the main
-    // loop may immediately submit another transmission and notification.
-    while (self->pump_tx_()) {
-      // ESPHome configures a 1 kHz FreeRTOS tick. At this baud rate a full
-      // FIFO lasts 6.7 ms; a high-priority 1 ms service task leaves headroom.
-      vTaskDelay(1);
+    // No logging or application callbacks here. A 17-byte join request must
+    // be length-limited and drained before the 64-byte FIFO fills with noise
+    // after the remote transmitter stops. The main loop may be blocked.
+    self->receive_once_(true);
+    if (self->tx_requested_.load(std::memory_order_acquire) && !self->reception_started_) {
+      self->tx_requested_.store(false,std::memory_order_relaxed);
+      self->start_tx_();
+      while (self->pump_tx_()) vTaskDelay(1);
     }
+    // Wake immediately for scheduled TX, otherwise service RX every 1 ms.
+    // ESPHome uses a 1 kHz FreeRTOS tick, checked during setup.
+    ulTaskNotifyTake(pdTRUE,1);
   }
 }
 #endif
@@ -233,32 +239,82 @@ void MicronetCC1101::log_diagnostics_() {
   ESP_LOGD(TAG,"Radio summary: RX frames=%u header_rejects=%u overflow=%u timeout=%u unstable_samples=%u deferred_reads=%u transmitting=%s",
     unsigned(rx_frames_),unsigned(header_rejects_),unsigned(overflows_),unsigned(timeouts_),
     unsigned(unstable_samples_),unsigned(deferred_reads_),transmitting_?"YES":"NO");
+  ESP_LOGD(TAG,"RX service: queue_drops=%u max_service_gap_us=%u",
+    unsigned(queue_drops_.load()),unsigned(max_rx_service_gap_us_.load()));
+}
+void MicronetCC1101::queue_received_(const uint8_t *data,size_t length) {
+  const uint32_t written=rx_written_.load(std::memory_order_relaxed);
+  if (written-rx_read_.load(std::memory_order_acquire)>=RX_QUEUE_SIZE) {
+    ++queue_drops_; return;
+  }
+  auto &slot=rx_queue_[written%RX_QUEUE_SIZE];
+  std::memcpy(slot.data,data,length); slot.length=length;
+  rx_written_.store(written+1,std::memory_order_release);
+}
+void MicronetCC1101::dispatch_received_() {
+  // Bound one main-loop pass even if the radio keeps producing frames while
+  // application callbacks run. Never retain a queue slot during a callback.
+  for (uint32_t i=0;i<RX_QUEUE_SIZE;++i) {
+    const uint32_t read=rx_read_.load(std::memory_order_relaxed);
+    if (read==rx_written_.load(std::memory_order_acquire)) break;
+    const ReceivedPacket packet=rx_queue_[read%RX_QUEUE_SIZE];
+    rx_read_.store(read+1,std::memory_order_release);
+    parent_->receive(packet.data,packet.length);
+  }
+  const uint32_t overflows=overflows_.load(),timeouts=timeouts_.load(),rejects=header_rejects_.load();
+  if (overflows!=reported_overflows_) {
+    const uint32_t fault=last_rx_fault_.load();
+    ESP_LOGD(TAG,"RX FIFO overflow/invalid count: total=%u RXBYTES=%02X MARCSTATE=%02X (deferred log)",
+      unsigned(overflows),unsigned(fault&255),unsigned((fault>>8)&255));
+    reported_overflows_=overflows;
+  }
+  if (timeouts!=reported_timeouts_ || rejects!=reported_header_rejects_) {
+    ESP_LOGD(TAG,"RX recovery: timeouts=%u header_rejects=%u (deferred log)",unsigned(timeouts),unsigned(rejects));
+    reported_timeouts_=timeouts; reported_header_rejects_=rejects;
+  }
 }
 void MicronetCC1101::loop() {
-  if (transmitting_) { service_tx_(); return; }
+  if (transmitting_) service_tx_();
+#ifdef USE_ESP32
+  dispatch_received_();
+  if (!transmitting_) log_diagnostics_();
+#else
+  if (!transmitting_) receive_once_();
+#endif
+}
+void MicronetCC1101::receive_once_(bool background) {
+  const uint32_t now=micros(),gap=now-last_rx_service_us_;
+  last_rx_service_us_=now;
+  if (gap>max_rx_service_gap_us_.load(std::memory_order_relaxed))
+    max_rx_service_gap_us_.store(gap,std::memory_order_relaxed);
   // Poll fast enough to drain the 64-byte FIFO during packets up to 96 bytes.
   // Leave one byte while receiving (CC1101 RX FIFO erratum); drain the final
   // byte after the hardware fixed-length packet counter has reached its end.
   // Expire partial packets even when no coherent FIFO count can be obtained.
   if (reception_started_ && millis()-started_>30) {
-    ++timeouts_; ESP_LOGD(TAG,"RX timeout: received=%u expected=%u",unsigned(used_),unsigned(expected_));
-    restart_(); return;
+    ++timeouts_; restart_(); return;
   }
   uint8_t count=read_reg_(0x3b);
   bool stable=false;
   for (unsigned attempt=0;attempt<3;++attempt) {
     const uint8_t confirm=read_reg_(0x3b);
     if ((count|confirm)&0x80) {
-      ++overflows_; ESP_LOGD(TAG,"RX FIFO overflow; restarting receiver"); restart_(); return;
+      last_rx_fault_.store(uint32_t(count|confirm)|(uint32_t(read_reg_(0x35)&0x1f)<<8));
+      ++overflows_; restart_(); return;
     }
     if (count==confirm) { stable=true; break; }
     ++unstable_samples_; count=confirm;
   }
   if (!stable) { ++deferred_reads_; return; }
   count &= 0x7f;
-  if (!count && !reception_started_) log_diagnostics_();
-  if (count > 64) { ++overflows_; ESP_LOGD(TAG,"RX FIFO invalid count=%u",count); restart_(); return; }
-  if (count && !reception_started_) { started_ = millis(); reception_started_ = true; }
+  if (!background && !count && !reception_started_) log_diagnostics_();
+  if (count > 64) {
+    last_rx_fault_.store(uint32_t(count)|(uint32_t(read_reg_(0x35)&0x1f)<<8));
+    ++overflows_; restart_(); return;
+  }
+  if (count && !reception_started_) {
+    started_=millis(); reception_started_=true; rx_busy_.store(true,std::memory_order_release);
+  }
   bool complete = expected_ && used_ + count >= expected_;
   size_t available = complete ? count : (count ? count - 1 : 0);
   while (available && used_ < sizeof(packet_)) {
@@ -272,21 +328,22 @@ void MicronetCC1101::loop() {
       // header-only ping/ACK leaves its last byte stranded by the FIFO erratum.
       if (packet_[12]<12 || packet_[12]>micronet::MAX_PACKET-2 ||
           micronet::checksum(packet_,11)!=packet_[11]) {
-        ++header_rejects_; micronet::log_packet_debug(TAG,"RX bad header prefix",packet_,used_);
-        restart_(); return;
+        ++header_rejects_; restart_(); return;
       }
       expected_=size_t(packet_[12])+2; write_reg_(0x06,expected_);
     }
     if (used_==14 && !micronet::header_valid(packet_,used_)) {
-      ++header_rejects_; micronet::log_packet_debug(TAG,"RX invalid header",packet_,used_);
-      restart_(); return;
+      ++header_rejects_; restart_(); return;
     }
     if (expected_ && used_ == expected_) {
       const size_t length=used_;
       // Match the reference drivers: resume RX before parsing, logging, flash
       // writes or Signal K callbacks. restart_ resets indices, not packet bytes;
-      // this loop owns the buffer until the synchronous callback returns.
-      ++rx_frames_; restart_(); parent_->receive(packet_,length); return;
+      // the worker copies the frame into the delivery queue before reusing it.
+      ++rx_frames_; restart_();
+      if (background) queue_received_(packet_,length);
+      else parent_->receive(packet_,length);
+      return;
     }
   }
 }
@@ -296,6 +353,7 @@ void MicronetCC1101::dump_config() {
   ESP_LOGCONFIG(TAG,"  SPI identity: part=%02X version=%02X; initialized=%s",chip_part_,chip_version_,ready()?"YES":"NO");
   ESP_LOGCONFIG(TAG,"  Modem readback: %.0f baud (DRATE_E=%u DRATE_M=%u, 26 MHz crystal)",baud_,rate_exponent_,rate_mantissa_);
   ESP_LOGCONFIG(TAG,"  TX framing: explicit 0x55 preamble + 0x99 sync (FIFO worker)");
+  ESP_LOGCONFIG(TAG,"  RX servicing: dedicated radio worker; delivery queue=%u packets",unsigned(RX_QUEUE_SIZE));
   ESP_LOGCONFIG(TAG, "Micronet CC1101 at %.3f MHz; overflow=%u timeout=%u", frequency_, unsigned(overflows_), unsigned(timeouts_));
 }
 }}

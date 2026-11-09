@@ -85,7 +85,9 @@ FIFO, with automatic preamble/sync disabled. A dedicated ESP32 task feeds the
 FIFO throughout the six-second wake burst, keeping the ESPHome loop and web UI
 responsive. GDO0 ISR callbacks only record RF activity timestamps; no SPI or
 logging runs in the ISR. The worker restores RX before notifying the main loop,
-which performs parsing, flash writes, publishing and TX logging. Initial
+and now also services RX continuously while the main loop performs parsing,
+flash writes, publishing and TX logging. Complete received packets cross a
+bounded four-packet queue; a full queue counts drops rather than blocking RX. Initial
 calibration is reused. TX sync timing is inferred from the RF end edge and
 packet airtime; see [protocol.md](protocol.md#master-transport) for timing limits.
 
@@ -119,3 +121,22 @@ After rebuilding the main unit, its Wi-Fi config dump should include
 `TX framing: explicit 0x55 preamble + 0x99 sync (FIFO worker)`. Deferred TX logs
 include the actual preamble byte count and `sync=99`. The existing passive
 listener firmware remains compatible because its receive sync is unchanged.
+
+## Confirmed wind join requests and receive servicing
+
+A later listener capture contains 21 valid join requests from wind transducer
+`020387F2` for network `81875510`, each requesting 12 payload bytes. The main
+unit instead reported 21 receive FIFO overflows and no accepted request.
+The sensor was responding to the new network; these captures establish more
+than the earlier two-CC1101-only test, but do not yet show wind data or a
+completed association.
+
+RX now runs in the dedicated radio task alongside TX, independent of main-loop
+logging and web/network work. The startup config dump identifies the update with
+`RX servicing: dedicated radio worker; delivery queue=4 packets`. Rebuild and
+install the main device with the updated external component, then retry pairing.
+Look for `Wind join request accepted: device=020387F2 payload=12` and a subsequent
+schedule containing the sensor. A paired status still requires valid wind speed
+and angle. If overflows remain, capture both logs including `RX service` and
+the deferred raw RXBYTES/MARCSTATE fault report. The passive listener can keep
+its existing firmware for this comparison.

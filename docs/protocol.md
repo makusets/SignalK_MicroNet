@@ -65,9 +65,10 @@ read-back baud rate. This matches MicroNav's selected `0x55` polarity and
 MicronetToNMEA's explicit FIFO framing; the former CC1101 automatic `0xAA`
 preamble introduced a different bit transition before `0x5599`.
 
-A dedicated ESP32 FreeRTOS task (priority 20, 4096-byte stack) services TX every
-1 ms using ESPHome's 1 kHz tick. Only that task accesses this radio's SPI while
-TX is active. The 64-byte FIFO holds about 6.7 ms at this baud rate. Long bursts
+A dedicated ESP32 FreeRTOS task (priority 20, 4096-byte stack) services both RX
+and TX every 1 ms using ESPHome's 1 kHz tick. After setup only that task accesses
+this radio's SPI. TX requests wake it immediately. The 64-byte FIFO holds about
+6.7 ms at this baud rate. Long bursts
 start in infinite-length mode, then switch to fixed length with fewer than 256
 bytes remaining, using the CC1101 datasheet section 15.2.2 procedure. FIFO
 underflow and completion timeout abort TX and restore RX; a stalled worker is
@@ -80,9 +81,14 @@ timestamp supplied to the scheduler is inferred by subtracting packet airtime
 at the read-back baud. PA switching delay and ISR latency remain bench timing
 uncertainties. RX restores GDO0 `0x06`, fixed length, and `0x5599` sync detection
 before completion is published to the main loop. All TX logs and application
-callbacks run there after the worker restores reception. PKTLEN is set from the
-first length byte while receiving, preserving header-only packet handling and
-the RX FIFO erratum workaround.
+callbacks run there after the worker restores reception. RX continues while
+those callbacks run. The worker checks headers, adjusts PKTLEN from the first
+length byte, and copies complete packets into a four-slot queue. The main loop
+copies/releases each slot before calling the hub or master. A full queue drops
+new packets and increments `queue_drops`; it never overwrites pending packets
+or blocks radio service. No logger, hub callback, sensor publishing or flash
+write runs in the radio task. Header-only handling and the RX FIFO erratum
+workaround are preserved.
 
 The schedule's first entry reserves the master's own payload length; a wind
 entry reserves the requested data payload. Each entry and the header have
@@ -121,11 +127,12 @@ interrupts, bursts the header, then collects the payload and pushes it through a
 message FIFO. Its radio is SX1276, not CC1101. MicronetToNMEA's CC1101
 `src/RfDriver.cpp::RfIsr_Rx` uses burst FIFO reads and changes PKTLEN after reading
 the header. It calls `RestartReception()` before publishing the completed message.
-The ESPHome adapter follows the burst-read and receive-restart ordering; its RX
-buffer is not overwritten until synchronous listeners return. GDO0 interrupts
-capture TX timestamps, but RX service still runs in the ESPHome loop. It is not a
-port of the references' interrupt-driven SPI implementation, and long blocking
-ESPHome calls can still cause lost packets.
+The ESPHome adapter follows the burst-read and receive-restart ordering, then
+copies the packet into a queue before reusing its RX buffer. GDO0 interrupts
+capture TX timestamps; an ESP32 task services RX instead of the main loop.
+It is not a port of the references' interrupt-driven SPI implementation. Long
+main-loop stalls can fill the delivery queue; task scheduling delays or shared
+SPI contention can still starve the hardware FIFO.
 
 MicronetToNMEA also sets `PKTCTRL1=0x80` (PQT=4). This preamble-quality qualifier
 is now enabled in the ESPHome CC1101 adapter to reduce false sync detections in
@@ -140,3 +147,26 @@ to a late previous poll. Diagnostics report interval and signed target error;
 regressions cover repeated 10 ms lateness, microsecond timer wrap and skipping
 blocked periods without catch-up bursts. This is still a main-loop radio service,
 so timing under actual ESPHome/network load must be verified on hardware.
+
+## RX while the main loop is busy
+
+The listener capture identified 21 checksum-valid `0x03` slot requests from wind
+sensor `020387F2`, addressed to network `81875510`. The main device recorded 21
+RX overflows at the corresponding times and no complete RX packet. This makes
+receive servicing a concrete problem to address; it does not by itself prove
+which scheduling delay or register condition caused every overflow.
+
+Before the RX worker change, TX ran independently but RX waited for the main
+loop to finish TX logs and other application work. Restoring SRX before logging
+was insufficient: initial fixed PKTLEN is 255 until the header is processed.
+After a short transmitter burst ends, the modem can continue filling the FIFO
+with demodulated noise. A host model reproduces an overflow when a captured
+17-byte join plus subsequent noise goes unserviced for 20 ms. Servicing RX every
+1 ms captures that request during a simulated 40 ms main-loop logging delay.
+
+The config dump now reports `RX servicing: dedicated radio worker; delivery
+queue=4 packets`. Runtime summaries add `RX service: queue_drops=...` and
+`max_service_gap_us=...`. The maximum excludes deliberate TX time by resetting
+the sampling timestamp when RX restarts. Overflows capture raw RXBYTES and
+MARCSTATE before restarting, and log them later on the main loop. These fields
+help diagnose remaining hardware, SPI bus contention, or scheduling faults.

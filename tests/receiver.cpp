@@ -9,6 +9,16 @@
 #include <cstring>
 #include <algorithm>
 static unsigned logging_requires_rx_start=0;
+class WorkerRadio : public esphome::micronet_cc1101::MicronetCC1101 {
+ public:
+  void receive_in_background() { receive_once_(true); }
+  void deliver() { dispatch_received_(); }
+  uint32_t overflows() const { return overflows_.load(); }
+  uint32_t queue_drops() const { return queue_drops_.load(); }
+};
+static WorkerRadio *background_radio=nullptr;
+static const std::vector<uint8_t> join_request{
+  0x81,0x87,0x55,0x10,0x02,0x03,0x87,0xf2,0x03,0x01,0x09,0xf8,0x0f,0x0f,0x01,0x0c,0x0d};
 using namespace esphome;
 int main() {
   micronet::Micronet hub;
@@ -18,7 +28,7 @@ int main() {
   hub.set_network_id(0x83037737); hub.set_device_type(2); hub.set_stale_after(10000);
   std::vector<uint8_t> wind{0x83,3,0x77,0x37,2,3,0x90,0x87,2,1,9,0x5c,0x18,0x18,
                           4,5,5,0,0x2c,0x3a,4,6,5,0xff,0xfb,9};
-  micronet_cc1101::MicronetCC1101 radio;
+  WorkerRadio radio;
   radio.set_parent(&hub); radio.set_frequency(915.915f); radio.setup();
   assert(!radio.failed && radio.ready());
   testlog::messages.clear(); radio.dump_config();
@@ -188,6 +198,55 @@ int main() {
   assert(testlog::contains("TX failed: completion timeout"));
   testlog::on_append=nullptr;
   fake_time+=5000; radio.loop(); assert(testlog::contains("Radio summary: RX frames="));
+  // Reproduce the receive-side failure: the initial fixed length is 255.
+  // After a 17-byte sensor burst, the demodulator can continue supplying noise
+  // unless the MCU programs PKTLEN promptly. Twenty ms without service fills
+  // a 64-byte FIFO even though the actual sensor packet was only 17 bytes.
+  std::vector<uint8_t> join_and_noise=join_request;
+  join_and_noise.resize(200,0xaa);
+  fake_microseconds=100000; fake_time=100;
+  const uint32_t previous_overflows=radio.overflows();
+  spi::chip.stream(join_and_noise); spi::chip.advance(20000);
+  assert(spi::chip.overflow);
+  radio.receive_in_background();
+  assert(radio.overflows()==previous_overflows+1 && !spi::chip.overflow);
+  spi::chip.incoming.clear();
+
+  // During the first post-TX log, inject the same captured join request.
+  // The main loop spends 40 ms logging; the worker services every 1 ms,
+  // length-limits the hardware packet, restarts RX, and queues a private copy.
+  // Application callbacks must wait for delivery on the main loop.
+  const int before_join=listener.received;
+  background_radio=&radio;
+  testlog::messages.clear();
+  testlog::on_append=[](const char *,const char *line) {
+    if(std::strncmp(line,"TX frame",8)!=0) return;
+    auto data=join_request; data.resize(200,0xaa);
+    spi::chip.stream(data);
+    for(int i=0;i<40;++i) {
+      spi::chip.advance(1000); background_radio->receive_in_background();
+    }
+  };
+  assert(radio.transmit(ping.data(),ping.size(),0));
+  pin.level(true); fake_microseconds+=4000; pin.level(false);
+  radio.loop();
+  assert(radio.overflows()==previous_overflows+1 && radio.queue_drops()==0);
+  assert(listener.received==before_join); // No worker-side application calls.
+  testlog::on_append=nullptr;
+  radio.deliver(); assert(listener.received==before_join+1);
+  assert(testlog::contains("RX frame network=81875510 device=020387F2 type=03"));
+  assert(!spi::chip.overflow);
+
+  // Queued frames survive reuse of the hardware buffer. Full queues drop a
+  // new packet explicitly without overwriting old packets or stalling RX.
+  const int before_queue=listener.received;
+  for(int n=0;n<6;++n) {
+    spi::chip.stream(join_request);
+    for(int i=0;i<5;++i) { spi::chip.advance(1000); radio.receive_in_background(); }
+  }
+  assert(radio.queue_drops()==2 && listener.received==before_queue);
+  radio.deliver(); assert(listener.received==before_queue+4);
+  spi::chip.timed=false;
   // Reproduce the user's startup log: a low/absent SPI response must never
   // be advertised as a usable radio, nor accepted for transmission.
   micronet_cc1101::MicronetCC1101 european_radio;
