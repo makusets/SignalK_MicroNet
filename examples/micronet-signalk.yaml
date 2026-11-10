@@ -3,7 +3,7 @@ substitutions:
   device_name: micronet-signalk
   friendly_name: Micronet Signal K
   radio_frequency: "869.840"
-  micronet_version: "644c4d2574079410183b17e5c8d15638344da5ad"
+  micronet_version: "1202364cc866d324728d07f9e46a9b5b7c0577a4"
 
 esphome:
   name: ${device_name}
@@ -63,6 +63,7 @@ micronet_cc1101:
 # A network ID derived from the ESP32 MAC is used and persists across reboots.
 # Pairing is explicitly started with the web button; no screen is needed.
 micronet_master:
+  # fast_pairing: true  # Experimental: end JOIN after actual wind data.
   id: wind_master
   micronet_id: micronet_bus
   paired:
@@ -78,6 +79,8 @@ web_server:
 sensor:
   - platform: micronet
     micronet_id: micronet_bus
+    signal_strength:
+      name: Micronet wind RSSI
     wind_speed:
       name: "Micronet wind speed"
       on_value:
