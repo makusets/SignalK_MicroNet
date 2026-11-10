@@ -1,6 +1,8 @@
 sensor:
   - platform: micronet
     micronet_id: micronet_bus
+    signal_strength:
+      name: Micronet wind RSSI
     wind_speed:
       name: "Micronet wind speed"
       on_value:

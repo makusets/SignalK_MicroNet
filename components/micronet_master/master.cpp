@@ -89,10 +89,13 @@ void Master::loop() {
   if (!initialized_ || is_failed() || radio_error_()) return;
   if (pair_requested_ && engine_.start_pairing(micros())) pair_requested_=false;
   Frame frame;
+  const uint32_t previous_recoveries=engine_.recovery_attempts();
   if (!hub_->transport()->busy() && engine_.next(micros(),millis(),frame)) {
     if (!hub_->transport()->transmit(frame.data.data(),frame.length,frame.preamble_ms))
       engine_.completed(false,micros(),micros(),millis());
   }
+  if (engine_.recovery_attempts()!=previous_recoveries)
+    ESP_LOGI(TAG,"Automatic recovery: waking saved wind sensor %08X",unsigned(engine_.saved().wind));
   if (!hub_->transport()->busy() && millis()-last_entities_>=250) { last_entities_=millis(); update_entities_(); }
 }
 void Master::report_status_(const char *state) {
@@ -132,9 +135,9 @@ void Master::update_entities_() {
     }
   }
   else switch (engine_.phase()) {
-    case Phase::WAKE: state=engine_.pairing()?"Pairing: waking sensors":"Waking paired sensor"; break;
-    case Phase::WAIT: state="Pairing: prepare (15 seconds)"; break;
-    case Phase::JOIN: state="Pairing: accepting wind sensor (60 seconds)"; break;
+    case Phase::WAKE: state=engine_.recovering()?"Recovering sensor: waking":engine_.pairing()?"Pairing: waking sensors":"Waking paired sensor"; break;
+    case Phase::WAIT: state=engine_.recovering()?"Recovering sensor: prepare":"Pairing: prepare (15 seconds)"; break;
+    case Phase::JOIN: state=engine_.recovering()?"Recovering saved wind sensor":"Pairing: accepting wind sensor (up to 60 seconds)"; break;
     case Phase::CONFIRM: state="Pairing: confirming wind data"; break;
     case Phase::RUNNING: state=engine_.online(millis())?"Paired; receiving wind":"Paired; waiting for wind"; break;
     case Phase::FAILED: state="Pairing failed; no confirmed wind sensor"; break;
@@ -143,6 +146,7 @@ void Master::update_entities_() {
   report_status_(state);
 }
 void Master::dump_config() {
+  ESP_LOGCONFIG(TAG,"Fast pairing: %s; offline recovery after 30 s, retry interval 180 s",engine_.fast_pairing()?"YES (experimental)":"NO");
   ESP_LOGCONFIG(TAG,"Standalone Micronet master network=%08X; missed async windows=%u",unsigned(network_id_),unsigned(engine_.missed_windows()));
 }
 }}

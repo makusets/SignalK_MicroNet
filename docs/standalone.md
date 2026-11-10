@@ -83,8 +83,8 @@ A changed network ID cannot silently restore an unrelated association.
 The CC1101 transmits explicit `0x55` preamble bytes and `0x99` sync through its
 FIFO, with automatic preamble/sync disabled. A dedicated ESP32 task feeds the
 FIFO throughout the six-second wake burst, keeping the ESPHome loop and web UI
-responsive. GDO0 ISR callbacks only record RF activity timestamps; no SPI or
-logging runs in the ISR. The worker restores RX before notifying the main loop,
+responsive. GDO0 ISR callbacks record TX activity timestamps or notify the
+RX task at the FIFO threshold; no SPI or logging runs in the ISR. The worker restores RX before notifying the main loop,
 and now also services RX continuously while the main loop performs parsing,
 flash writes, publishing and TX logging. Complete received packets cross a
 bounded four-packet queue; a full queue counts drops rather than blocking RX. Initial
@@ -140,3 +140,47 @@ schedule containing the sensor. A paired status still requires valid wind speed
 and angle. If overflows remain, capture both logs including `RX service` and
 the deferred raw RXBYTES/MARCSTATE fault report. The passive listener can keep
 its existing firmware for this comparison.
+
+## Signal strength, automatic recovery and optional faster pairing
+
+The `online` binary sensor uses successfully decoded speed **or** angle from the
+saved wind device within the last 10 seconds. A radio interrupt, join request,
+RSSI sample, or Wi-Fi connection does not make it online. `paired` reports the
+saved association and stays on through an outage. Individual wind measurements
+expire independently after the hub's `stale_after` interval.
+
+If normal polling has not received either wind value for 30 seconds, including
+after restoring an association at boot, the master automatically runs the same
+six-second wake / prepare / join sequence used by the Pair button. Recovery
+accepts only the already-saved device ID, keeps its association intact, and ends
+as soon as that device supplies a packet with both valid wind values. It does
+not require another join request from a sensor already listed in the schedule.
+Failed attempts retry no more often than every 180 seconds from the previous
+attempt's start; healthy data resets this backoff for a later outage. Recovery
+is logged and identified in the web status. No recovery takes place for an
+unpaired receiver, and another nearby sensor cannot replace the saved one.
+
+The reference pairing timings remain the default. To try early completion, add
+`fast_pairing: true` under the existing `micronet_master:` block. This is an
+experimental opt-in: a join request alone is insufficient. Once the candidate
+sends both valid wind measurements during JOIN, the master switches to normal
+polling and requires fresh wind data before saving the pairing. The six-second
+wake and 15-second prepare remain. It offers no speed-up for a sensor that waits
+until the join window ends before sending data. If a particular T120 requires
+the full join window, leave this option off and retry the standard sequence.
+
+Add the following under the existing `sensor: - platform: micronet` entry:
+
+```yaml
+signal_strength:
+  name: Micronet wind RSSI
+```
+
+Updated examples include this diagnostic by default. RSSI is the receiver's
+estimate in dBm; less negative is stronger. It is not the sensor's battery level
+or the Wi-Fi signal. It follows network/device-type filters; before pairing a
+wind device's RSSI may be shown even though wind publication is still blocked.
+Foreign networks and invalid packets do not update it. It expires to unavailable
+with `stale_after`. The CC1101 conversion uses a nominal 74 dB offset, so values
+are approximate and module-dependent. Record RSSI and overflow counts together
+when comparing the 10 m placement with a closer placement.

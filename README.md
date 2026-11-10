@@ -267,3 +267,10 @@ Master/pairing behavior is also informed by the published protocol observations
 and captures in [mnsnoop/esp32Micronet](https://github.com/mnsnoop/esp32Micronet),
 commit `92b53a6760ae31b0a419fa90e948f1630f0eb384`; no source from that project is copied.
 GPL-3.0-or-later; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The Micronet sensor platform also supports a `signal_strength` diagnostic in dBm.
+Saved sensors automatically enter recovery after 30 seconds without wind data.
+An optional `micronet_master.fast_pairing: true` can end JOIN early after actual
+wind data, followed by normal-poll confirmation; default timings are unchanged.
+See [standalone operation](docs/standalone.md#signal-strength-automatic-recovery-and-optional-faster-pairing)
+for configuration and the distinction between `paired`, `online`, and signal strength.

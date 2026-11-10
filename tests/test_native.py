@@ -76,3 +76,18 @@ def test_cpp_interfaces_against_real_esphome_headers(tmp_path):
             ("micronet_master", "master.cpp"), ("lsm303dlhc", "lsm303dlhc.cpp"),
         )],
     ], check=True)
+
+
+def test_esp32_fifo_interrupt_and_main_loop_spi_ownership(tmp_path):
+    binary = tmp_path / "radio_irq"
+    include = tmp_path / "include" / "esphome"
+    include.mkdir(parents=True)
+    (include / "components").symlink_to(ROOT / "components", target_is_directory=True)
+    subprocess.run([
+        "g++", "-std=c++17", "-DUSE_ESP32", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+        "-I", str(ROOT / "tests/stubs"), "-I", str(ROOT), "-I", str(include.parent),
+        str(ROOT / "tests/radio_irq.cpp"), str(ROOT / "components/micronet/micronet.cpp"),
+        str(ROOT / "components/micronet_cc1101/micronet_cc1101.cpp"), "-o", str(binary),
+    ], check=True)
+    subprocess.run([str(binary)], check=True)

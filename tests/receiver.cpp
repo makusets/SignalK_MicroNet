@@ -152,7 +152,7 @@ int main() {
     }
     assert(!radio.busy() && listener.completed==before_completed+1 && listener.success);
     assert(!spi::chip.tx_underflow && spi::chip.max_tx_fifo<=64);
-    assert(spi::chip.regs[0x12]==2 && spi::chip.regs[0x08]==0 && spi::chip.regs[0x02]==6);
+    assert(spi::chip.regs[0x12]==2 && spi::chip.regs[0x08]==0 && spi::chip.regs[0x02]==0);
     uint32_t preamble=std::max(uint32_t(16),uint32_t(std::ceil(programmed_baud*wake_ms/8000.0)));
     if (((preamble+1+frame.size())&255)==0) ++preamble;
     const auto &on_air=spi::chip.emitted;
@@ -256,6 +256,23 @@ int main() {
   const unsigned eu_word=(unsigned(spi::chip.regs[0xd])<<16)|(unsigned(spi::chip.regs[0xe])<<8)|spi::chip.regs[0xf];
   assert(std::fabs(eu_word*26.0/65536-869.840)<0.001);
   assert((spi::chip.regs[0x10]&15)==11 && spi::chip.regs[0x11]==0x83);
+  // Packet RSSI uses signed CC1101 units, is captured before restarting RX,
+  // follows source filters, and expires rather than retaining a stale level.
+  sensor::Sensor strength; hub.set_signal_strength_sensor(&strength);
+  spi::chip.regs[0x34]=0xe0; // -32 / 2 - 74 = -90 dBm.
+  for(auto b:wind) { spi::chip.fifo.push_back(b); radio.receive_in_background(); }
+  radio.receive_in_background(); radio.deliver();
+  assert(!strength.values.empty() && strength.values.back()==-90.0f);
+  const size_t signal_count=strength.values.size();
+  auto invalid_rssi_frame=wind; invalid_rssi_frame.back()^=1;
+  hub.receive(invalid_rssi_frame.data(),invalid_rssi_frame.size(),-40);
+  assert(strength.values.size()==signal_count);
+  hub.set_device_id(0); // An unpaired wind's valid signal may still be measured.
+  hub.receive(wind.data(),wind.size(),-55); assert(strength.values.back()==-55);
+  hub.set_device_id(0x02000001);
+  hub.receive(wind.data(),wind.size(),-30); assert(strength.values.back()==-55);
+  hub.set_device_id(0x02039087);
+  fake_time+=10001; hub.loop(); assert(std::isnan(strength.values.back()));
   spi::chip.regs[0x31]=0;
   micronet_cc1101::MicronetCC1101 missing_radio;
   missing_radio.set_parent(&hub); missing_radio.set_gdo0_pin(&pin); missing_radio.setup();

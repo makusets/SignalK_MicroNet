@@ -79,7 +79,7 @@ During TX, GDO0 uses inverted `PA_PD` (`0x5b`) so its edges mark RF activity eve
 though hardware sync is disabled. The ISR records the end edge; the sync-end
 timestamp supplied to the scheduler is inferred by subtracting packet airtime
 at the read-back baud. PA switching delay and ISR latency remain bench timing
-uncertainties. RX restores GDO0 `0x06`, fixed length, and `0x5599` sync detection
+uncertainties. RX restores GDO0 FIFO-threshold signalling, fixed length, and `0x5599` sync detection
 before completion is published to the main loop. All TX logs and application
 callbacks run there after the worker restores reception. RX continues while
 those callbacks run. The worker checks headers, adjusts PKTLEN from the first
@@ -170,3 +170,24 @@ queue=4 packets`. Runtime summaries add `RX service: queue_drops=...` and
 the sampling timestamp when RX restarts. Overflows capture raw RXBYTES and
 MARCSTATE before restarting, and log them later on the main loop. These fields
 help diagnose remaining hardware, SPI bus contention, or scheduling faults.
+
+## FIFO interrupts and per-packet RSSI
+
+The radio task now also wakes on GDO0 RX FIFO threshold interrupts: FIFOTHR=0
+(four bytes), IOCFG0=0 (assert at threshold, deassert below it). The ISR only
+notifies the task. SPI and packet handling remain outside interrupt context;
+the one-millisecond poll remains a fallback. This lets short headers reach the
+PKTLEN update promptly instead of waiting for repeated periodic polls. It uses
+the same GDO0 wire; TX still switches GDO0 to inverted PA_PD. Config dumps report
+`RX FIFO wake: GDO0 threshold=4 bytes; fallback=1 ms; packet RSSI enabled`.
+`fifo_irq_wakes` in RX service summaries confirms RX interrupts are occurring.
+This does not prevent gaps caused by disabled interrupts/flash operations or
+long SPI bus contention; hardware timing still needs measurement.
+
+The worker reads RSSI (status register 0x34) before restarting reception. With
+sync detection enabled the RSSI estimate is frozen at sync, so it describes the
+received frame rather than noise after a later restart. Signed raw units are
+converted as `(raw >= 128 ? raw - 256 : raw) / 2 - 74` dBm. The float travels with
+the queued packet; the main loop validates the message and filters the source
+before updating the optional hub signal-strength sensor. No APPEND_STATUS bytes,
+CRC mode, or over-the-air framing change is needed.

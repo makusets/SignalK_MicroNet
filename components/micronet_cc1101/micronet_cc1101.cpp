@@ -26,7 +26,8 @@ void MicronetCC1101::restart_() {
   strobe_(0x3a); // SFRX; never flush in RX
   write_reg_(0x08, 0x00); // Restore fixed RX length after raw/infinite TX.
   write_reg_(0x06, 255); // Adjusted after receiving the Micronet header.
-  if (gdo0_pin_) write_reg_(0x02, 0x06); // RX sync/end signal.
+  write_reg_(0x03,0x00); // RX FIFO threshold: 4 bytes, prompt header service.
+  if (gdo0_pin_) write_reg_(0x02,0x00); // FIFO threshold, deasserts below 4.
   write_reg_(0x12, 0x02); // RX: 16/16 sync detection.
   used_ = expected_ = 0; reception_started_ = false;
   rx_busy_.store(false,std::memory_order_release);
@@ -91,7 +92,17 @@ void MicronetCC1101::setup() {
 #endif
 }
 void IRAM_ATTR MicronetCC1101::edge_(MicronetCC1101 *self) {
-  if (!self->capture_tx_.load(std::memory_order_relaxed)) return;
+  if (!self->capture_tx_.load(std::memory_order_relaxed)) {
+#ifdef USE_ESP32
+    if (self->radio_task_handle_ && self->isr_gdo0_.digital_read()) {
+      ++self->rx_irq_wakes_;
+      BaseType_t woken=pdFALSE;
+      vTaskNotifyGiveFromISR(self->radio_task_handle_,&woken);
+      if (woken==pdTRUE) portYIELD_FROM_ISR();
+    }
+#endif
+    return;
+  }
   uint32_t now=micros();
   if (self->isr_gdo0_.digital_read()) {
     self->sync_end_us_.store(now,std::memory_order_relaxed);
@@ -239,16 +250,16 @@ void MicronetCC1101::log_diagnostics_() {
   ESP_LOGD(TAG,"Radio summary: RX frames=%u header_rejects=%u overflow=%u timeout=%u unstable_samples=%u deferred_reads=%u transmitting=%s",
     unsigned(rx_frames_),unsigned(header_rejects_),unsigned(overflows_),unsigned(timeouts_),
     unsigned(unstable_samples_),unsigned(deferred_reads_),transmitting_?"YES":"NO");
-  ESP_LOGD(TAG,"RX service: queue_drops=%u max_service_gap_us=%u",
-    unsigned(queue_drops_.load()),unsigned(max_rx_service_gap_us_.load()));
+  ESP_LOGD(TAG,"RX service: queue_drops=%u max_service_gap_us=%u fifo_irq_wakes=%u",
+    unsigned(queue_drops_.load()),unsigned(max_rx_service_gap_us_.load()),unsigned(rx_irq_wakes_.load()));
 }
-void MicronetCC1101::queue_received_(const uint8_t *data,size_t length) {
+void MicronetCC1101::queue_received_(const uint8_t *data,size_t length,float rssi) {
   const uint32_t written=rx_written_.load(std::memory_order_relaxed);
   if (written-rx_read_.load(std::memory_order_acquire)>=RX_QUEUE_SIZE) {
     ++queue_drops_; return;
   }
   auto &slot=rx_queue_[written%RX_QUEUE_SIZE];
-  std::memcpy(slot.data,data,length); slot.length=length;
+  std::memcpy(slot.data,data,length); slot.length=length; slot.rssi=rssi;
   rx_written_.store(written+1,std::memory_order_release);
 }
 void MicronetCC1101::dispatch_received_() {
@@ -259,7 +270,7 @@ void MicronetCC1101::dispatch_received_() {
     if (read==rx_written_.load(std::memory_order_acquire)) break;
     const ReceivedPacket packet=rx_queue_[read%RX_QUEUE_SIZE];
     rx_read_.store(read+1,std::memory_order_release);
-    parent_->receive(packet.data,packet.length);
+    parent_->receive(packet.data,packet.length,packet.rssi);
   }
   const uint32_t overflows=overflows_.load(),timeouts=timeouts_.load(),rejects=header_rejects_.load();
   if (overflows!=reported_overflows_) {
@@ -340,9 +351,13 @@ void MicronetCC1101::receive_once_(bool background) {
       // Match the reference drivers: resume RX before parsing, logging, flash
       // writes or Signal K callbacks. restart_ resets indices, not packet bytes;
       // the worker copies the frame into the delivery queue before reusing it.
+      // RSSI is frozen at sync detection until RX is restarted. Snapshot it
+      // before SRX; the 74 dB offset is nominal for this CC1101 configuration.
+      const uint8_t raw=read_reg_(0x34);
+      const float rssi=(raw>=128?int(raw)-256:int(raw))*0.5f-74.0f;
       ++rx_frames_; restart_();
-      if (background) queue_received_(packet_,length);
-      else parent_->receive(packet_,length);
+      if (background) queue_received_(packet_,length,rssi);
+      else parent_->receive(packet_,length,rssi);
       return;
     }
   }
@@ -353,6 +368,7 @@ void MicronetCC1101::dump_config() {
   ESP_LOGCONFIG(TAG,"  SPI identity: part=%02X version=%02X; initialized=%s",chip_part_,chip_version_,ready()?"YES":"NO");
   ESP_LOGCONFIG(TAG,"  Modem readback: %.0f baud (DRATE_E=%u DRATE_M=%u, 26 MHz crystal)",baud_,rate_exponent_,rate_mantissa_);
   ESP_LOGCONFIG(TAG,"  TX framing: explicit 0x55 preamble + 0x99 sync (FIFO worker)");
+  ESP_LOGCONFIG(TAG,"  RX FIFO wake: GDO0 threshold=4 bytes; fallback=1 ms; packet RSSI enabled");
   ESP_LOGCONFIG(TAG,"  RX servicing: dedicated radio worker; delivery queue=%u packets",unsigned(RX_QUEUE_SIZE));
   ESP_LOGCONFIG(TAG, "Micronet CC1101 at %.3f MHz; overflow=%u timeout=%u", frequency_, unsigned(overflows_), unsigned(timeouts_));
 }

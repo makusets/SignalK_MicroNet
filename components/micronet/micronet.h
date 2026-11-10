@@ -12,6 +12,7 @@ class Micronet : public Component {
   void set_device_id(uint32_t id) { device_id_ = id; filter_device_ = true; }
   void set_device_type(uint8_t type) { device_type_ = type; filter_type_ = true; }
   void set_stale_after(uint32_t ms) { stale_after_ = ms; }
+  void set_signal_strength_sensor(sensor::Sensor *s) { signal_strength_=s; }
   void set_sensor(Measurement kind, sensor::Sensor *s) { sensors_[size_t(kind)] = s; }
   void set_listener(PacketListener *listener) { listener_ = listener; }
   void set_transport(RadioTransport *transport) { transport_ = transport; }
@@ -20,10 +21,13 @@ class Micronet : public Component {
     if (listener_) listener_->on_transmitted(success, sync_end, end);
   }
   // Radio adapters deliver bytes AFTER sync 0x99, with the complete 14-byte header.
-  bool receive(const uint8_t *data, size_t length);
+  bool receive(const uint8_t *data, size_t length, float rssi=NAN);
   void loop() override;
   void dump_config() override;
  protected:
+  sensor::Sensor *signal_strength_{nullptr};
+  uint32_t signal_updated_{0};
+  bool signal_valid_{false};
   PacketListener *listener_{nullptr};
   RadioTransport *transport_{nullptr};
   static constexpr size_t COUNT = size_t(Measurement::COUNT);

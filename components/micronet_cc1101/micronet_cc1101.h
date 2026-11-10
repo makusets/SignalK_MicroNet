@@ -34,7 +34,7 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   void stop_tx_(bool success);
   void fill_tx_(size_t count);
   void receive_once_(bool background=false);
-  void queue_received_(const uint8_t *data,size_t length);
+  void queue_received_(const uint8_t *data,size_t length,float rssi);
   void dispatch_received_();
 #ifdef USE_ESP32
   static void radio_task_(void *arg);
@@ -53,11 +53,11 @@ class MicronetCC1101 : public Component, public micronet::RadioTransport,
   // main loop logs TX completion or performs network/application work.
   std::atomic<bool> tx_done_{false};
   std::atomic<bool> tx_requested_{false}, rx_busy_{false};
-  struct ReceivedPacket { uint8_t data[micronet::MAX_PACKET]; size_t length; };
+  struct ReceivedPacket { uint8_t data[micronet::MAX_PACKET]; size_t length; float rssi; };
   static constexpr uint32_t RX_QUEUE_SIZE=4;
   ReceivedPacket rx_queue_[RX_QUEUE_SIZE]{};
   std::atomic<uint32_t> rx_written_{0},rx_read_{0},queue_drops_{0};
-  std::atomic<uint32_t> last_rx_fault_{0};
+  std::atomic<uint32_t> last_rx_fault_{0},rx_irq_wakes_{0};
   uint32_t reported_overflows_{0},reported_timeouts_{0},reported_header_rejects_{0};
   bool tx_success_{false}, tx_fixed_{false};
   uint8_t tx_error_bytes_{0}, tx_error_state_{0};

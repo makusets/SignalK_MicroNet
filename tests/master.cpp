@@ -111,6 +111,7 @@ int main() {
       const uint32_t target=anchor+i*1000000;
       assert(int32_t(actual_sync-target)==10000);
       cadence.completed(true,actual_sync,actual_sync+2306,9000+i*1000);
+      cadence.receive(data.data(),data.size(),9000+i*1000); // Healthy steady-state sensor.
       assert(cadence.poll_error_us()==10000);
       assert(cadence.poll_interval_us()==(i==1?1010000U:1000000U));
     }
@@ -120,6 +121,39 @@ int main() {
     assert(cadence.skipped_polls()>=2);
     assert(!cadence.next(late+5000,132006,f)); // No catch-up burst.
   }
+  // A saved sensor that stays silent after a reboot gets the full proven
+  // pairing-style wake automatically, without admitting a different sensor.
+  Engine recover; recover.initialize(NETWORK,saved,0);
+  step(recover,3000); assert(!recover.recovering());
+  assert(recover.next(33000000,33000,f) && recover.recovering() && f.preamble_ms==6000 && f.data[9]==0x0f);
+  recover.completed(true,39000000,39003000,39003);
+  step(recover,54003); assert(recover.phase()==Phase::JOIN);
+  recover.receive(other.data(),other.size(),55000); assert(recover.candidate_id()==0);
+  recover.receive(req.data(),req.size(),55001); assert(recover.candidate_id()==WIND);
+  recover.receive(data.data(),data.size(),55002);
+  assert(!recover.recovering() && !recover.pairing() && recover.paired() && recover.online(55003));
+  assert(recover.saved().wind==WIND && !recover.take_changed());
+  assert(!recover.online(65002)); // Ten seconds since a real wind reading.
+  assert(recover.next(85002000,85002,f) && recover.recovering()); // A later outage can recover too.
+
+  Engine backoff; backoff.initialize(NETWORK,saved,0); step(backoff,3000);
+  assert(backoff.next(33000000,33000,f) && backoff.recovering());
+  backoff.completed(true,39000000,39003000,39003);
+  step(backoff,54003); step(backoff,114003); step(backoff,144004);
+  assert(backoff.paired() && !backoff.recovering() && backoff.recovery_attempts()==1);
+  step(backoff,145004); assert(backoff.recovery_attempts()==1); // No immediate retry loop.
+  step(backoff,213004); assert(backoff.recovery_attempts()==2 && backoff.recovering());
+
+  Engine fast; fast.set_fast_pairing(true); fast.initialize(NETWORK,{},0);
+  fast.start_pairing(0); step(fast,0,1); step(fast,15000);
+  fast.receive(req.data(),req.size(),16000); assert(fast.phase()==Phase::JOIN);
+  fast.receive(data.data(),data.size(),16001);
+  assert(fast.phase()==Phase::CONFIRM && !fast.paired());
+  assert(fast.next(17000000,17000,f) && f.data[9]==9);
+  fast.receive(data.data(),data.size(),17000); assert(!fast.paired());
+  fast.completed(true,17002375,17005000,17005);
+  fast.receive(data.data(),data.size(),17006); assert(fast.paired());
+
   // Check the ESPHome web button, binary sensor, and flash restore integration.
   struct Radio : micronet::RadioTransport {
     Frame frame;
@@ -149,7 +183,7 @@ int main() {
   assert(testlog::contains("Pairing: prepare (15 seconds)"));
   const size_t logged=testlog::messages.size(); master.loop(); assert(testlog::messages.size()==logged);
   fake_time=21003; fake_microseconds=21003000; master.loop();
-  assert(testlog::contains("Pairing: accepting wind sensor (60 seconds)"));
+  assert(testlog::contains("Pairing: accepting wind sensor (up to 60 seconds)"));
   master.on_transmitted(true,21005375,21008000);
   master.on_packet(req.data(),req.size());
   assert(testlog::contains("Wind join request accepted: device=02039087 payload=12"));

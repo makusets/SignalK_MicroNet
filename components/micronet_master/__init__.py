@@ -13,6 +13,7 @@ PairButton = ns.class_("PairButton", button.Button)
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(Master),
     cv.GenerateID("micronet_id"): cv.use_id(Micronet),
+    cv.Optional("fast_pairing", default=False): cv.boolean,
     cv.Optional("network_id"): cv.hex_uint32_t,
     cv.Optional("pair", default={"name": "Pair wind sensor"}): button.button_schema(PairButton),
     cv.Optional("paired", default={"name": "Wind sensor paired"}): binary_sensor.binary_sensor_schema(),
@@ -26,6 +27,7 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     cg.add(var.set_hub(await cg.get_variable(config["micronet_id"])))
+    cg.add(var.set_fast_pairing(config["fast_pairing"]))
     if "network_id" in config:
         cg.add(var.set_network_id(config["network_id"]))
     pair = await button.new_button(config["pair"])

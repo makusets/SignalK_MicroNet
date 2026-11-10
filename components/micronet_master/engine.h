@@ -45,6 +45,10 @@ enum class Failure { NONE, TX_FAILED, NO_JOIN_REQUEST, NO_WIND_DATA, MISSING_SPE
 enum class Phase { IDLE, WAKE, WAIT, JOIN, CONFIRM, RUNNING, FAILED };
 class Engine {
  public:
+  void set_fast_pairing(bool value) { fast_pairing_=value; }
+  bool fast_pairing() const { return fast_pairing_; }
+  bool recovering() const { return recovering_; }
+  uint32_t recovery_attempts() const { return recovery_attempts_; }
   void initialize(uint32_t network, Pairing saved, uint32_t now_us) {
     network_=network; saved_=saved.valid() && saved.network==network ? saved : Pairing{};
     phase_=saved_.valid() ? Phase::WAKE : Phase::IDLE;
@@ -53,7 +57,7 @@ class Engine {
   bool start_pairing(uint32_t now_us) {
     if (pairing()) return true;
     if (awaiting_) return false;
-    candidate_={}; wind_mask_=0; failure_=Failure::NONE; last_candidate_=0; pairing_requested_=true; changed_=false;
+    recovering_=false; candidate_={}; wind_mask_=0; failure_=Failure::NONE; last_candidate_=0; pairing_requested_=true; changed_=false;
     phase_=Phase::WAKE; next_poll_=now_us; have_grid_=false; have_last_sync_=false; async_pending_=false; return true;
   }
   bool pairing() const { return pairing_requested_; }
@@ -77,6 +81,14 @@ class Engine {
   // sent late into another device's response slot. Unsigned clocks may wrap.
   bool next(uint32_t now_us, uint32_t now_ms, Frame &frame) {
     if (awaiting_) return false;
+    // A saved association should not require a user to press Pair after a long
+    // outage. Retry the proven wake/prepare/join sequence for that ID only.
+    if (phase_==Phase::RUNNING && saved_.valid() &&
+        now_ms-(seen_saved_?last_saved_ms_:running_since_ms_)>=30000 &&
+        (!recovery_attempted_ || now_ms-last_recovery_ms_>=180000)) {
+      start_pairing(now_us); recovering_=true; recovery_attempted_=true;
+      last_recovery_ms_=now_ms; ++recovery_attempts_;
+    }
     if (phase_==Phase::WAIT && now_ms-phase_ms_>=15000) { phase_=Phase::JOIN; phase_ms_=now_ms; }
     if (phase_==Phase::JOIN && now_ms-phase_ms_>=60000) {
       phase_=Phase::CONFIRM; phase_ms_=now_ms; wind_mask_=0; normal_poll_sent_=false;
@@ -128,7 +140,7 @@ class Engine {
     if (!have_grid_) { next_sync_us_=sync_end_us; have_grid_=true; }
     next_sync_us_+=1000000;
     if (phase_==Phase::WAKE) {
-      phase_=pairing_requested_?Phase::WAIT:Phase::RUNNING; phase_ms_=now_ms;
+      phase_=pairing_requested_?Phase::WAIT:Phase::RUNNING; phase_ms_=now_ms; running_since_ms_=now_ms;
     }
     if (phase_==Phase::CONFIRM) normal_poll_sent_=true;
     if (!long_preamble_) {
@@ -156,7 +168,7 @@ class Engine {
     uint32_t wind=decoded.device_id;
     if (decoded.message_id==3) {
       if (n!=17 || checksum(p+14,2)!=p[16] || p[15]<6 || p[15]>82) return;
-      if (phase_==Phase::JOIN && (!candidate_.wind || candidate_.wind==wind)) {
+      if (phase_==Phase::JOIN && (!recovering_ || wind==saved_.wind) && (!candidate_.wind || candidate_.wind==wind)) {
         candidate_={network_,wind,p[15]};
       } else if (saved_.valid() && saved_.wind==wind) saved_.payload=p[15];
     } else if (decoded.message_id==5) {
@@ -169,12 +181,28 @@ class Engine {
         speed |= decoded.readings[i].kind==micronet::Measurement::WIND_SPEED;
         angle |= decoded.readings[i].kind==micronet::Measurement::WIND_ANGLE;
       }
-      if (saved_.valid() && saved_.wind==wind && (speed||angle)) { last_saved_ms_=now_ms; seen_saved_=true; }
+      if (saved_.valid() && saved_.wind==wind && (speed||angle)) {
+        last_saved_ms_=now_ms; seen_saved_=true;
+        if (!recovering_) recovery_attempted_=false;
+        if (phase_==Phase::RUNNING) failure_=Failure::NONE;
+      }
+      // Recovery may end as soon as the saved device resumes real wind data;
+      // it need not migrate to a different network or save a new association.
+      if (recovering_ && saved_.wind==wind && speed && angle) {
+        recovering_=false; recovery_attempted_=false; pairing_requested_=false; failure_=Failure::NONE;
+        candidate_={}; wind_mask_=0; phase_=Phase::RUNNING; async_pending_=false;
+        return;
+      }
+      // Optional early exit is based on data, never just a join request.
+      // Still require a subsequent normal poll and fresh confirmation data.
+      if (fast_pairing_ && candidate_.wind==wind && phase_==Phase::JOIN && speed && angle) {
+        phase_=Phase::CONFIRM; phase_ms_=now_ms; wind_mask_=0; normal_poll_sent_=false;
+      }
       if (candidate_.wind==wind && phase_==Phase::CONFIRM && normal_poll_sent_) {
         if (now_ms-last_candidate_ms_>5000) wind_mask_=0;
         wind_mask_|=(speed?1:0)|(angle?2:0); last_candidate_ms_=now_ms;
         if (wind_mask_==3) {
-          saved_=candidate_; changed_=true; pairing_requested_=false; phase_=Phase::RUNNING;
+          saved_=candidate_; changed_=true; pairing_requested_=false; recovering_=false; phase_=Phase::RUNNING;
           seen_saved_=true; last_saved_ms_=now_ms;
         }
       }
@@ -192,9 +220,11 @@ class Engine {
   Pairing target_() const { return candidate_.wind && pairing_requested_?candidate_:saved_; }
   void fail_pairing_(Failure failure) {
     failure_=failure; last_candidate_=candidate_.wind;
-    pairing_requested_=false; candidate_={}; wind_mask_=0; async_pending_=false;
+    pairing_requested_=false; recovering_=false; candidate_={}; wind_mask_=0; async_pending_=false;
     phase_=saved_.valid()?Phase::RUNNING:Phase::FAILED;
   }
+  bool fast_pairing_{false},recovering_{false},recovery_attempted_{false};
+  uint32_t running_since_ms_{0},last_recovery_ms_{0},recovery_attempts_{0};
   Pairing saved_{},candidate_{};
   Phase phase_{Phase::IDLE};
   Failure failure_{Failure::NONE};

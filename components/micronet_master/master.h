@@ -11,6 +11,7 @@ namespace esphome { namespace micronet_master {
 class Master : public Component, public micronet::PacketListener {
  public:
   void set_hub(micronet::Micronet *hub) { hub_=hub; hub->set_listener(this); }
+  void set_fast_pairing(bool value) { engine_.set_fast_pairing(value); }
   void set_network_id(uint32_t id) { network_id_=id; }
   void set_paired(binary_sensor::BinarySensor *s) { paired_=s; }
   void set_online(binary_sensor::BinarySensor *s) { online_=s; }
