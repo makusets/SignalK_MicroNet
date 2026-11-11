@@ -155,8 +155,12 @@ six-second wake / prepare / join sequence used by the Pair button. Recovery
 accepts only the already-saved device ID, keeps its association intact, and ends
 as soon as that device supplies a packet with both valid wind values. It does
 not require another join request from a sensor already listed in the schedule.
-Failed attempts retry no more often than every 180 seconds from the previous
-attempt's start; healthy data resets this backoff for a later outage. Recovery
+Recovery starts have a minimum interval of 30 seconds, measured from the
+previous attempt's start; healthy data resets this backoff for a later outage.
+An attempt in progress is allowed to finish, not interrupted at 30 seconds. A
+full unsuccessful wake/prepare/join/confirm takes about 111 seconds, so the next
+attempt is eligible immediately afterward. A short failure, such as TX
+underflow, waits until 30 seconds after the previous start before retrying. Recovery
 is logged and identified in the web status. No recovery takes place for an
 unpaired receiver, and another nearby sensor cannot replace the saved one.
 
@@ -184,3 +188,24 @@ Foreign networks and invalid packets do not update it. It expires to unavailable
 with `stale_after`. The CC1101 conversion uses a nominal 74 dB offset, so values
 are approximate and module-dependent. Record RSSI and overflow counts together
 when comparing the 10 m placement with a closer placement.
+
+### Reference recovery comparison
+
+Reviewed upstream revisions:
+
+- [MicroNav MicronetDevice.cpp](https://github.com/Rodemfr/MicroNav/blob/abaf6f20ae1af6967b30904ee8c062b63e569f2e/src/Micronet/MicronetDevice.cpp):
+  `NETWORK_LOST_TIME_MS=5000`; `Yield()` returns an active slave to network search
+  after missing master requests. On receiving a matching master schedule,
+  `ProcessMessage()` marks the device active and requests a slot if not listed.
+- [MicronetToNMEA MicronetSlaveDevice.cpp](https://github.com/Rodemfr/MicronetToNMEA/blob/f0a9a2f03f9aa0841dc8924594c49581f3f9599a/src/MicronetSlaveDevice.cpp):
+  responds to matching master requests and sends a slot request if no usable
+  slot is allocated. It does not implement our standalone wind-master recovery.
+- [esp32Micronet micronet.cpp](https://github.com/mnsnoop/esp32Micronet/blob/92b53a6760ae31b0a419fa90e948f1630f0eb384/micronet.cpp):
+  network choice listens for about three seconds, then announces a new master
+  with the six-second preamble defined in `radio.h`. Connected-node loss uses
+  five seconds without an announcement. The scheduler polls once per second.
+
+These support timeout-based discovery/rejoining and the long announcement,
+but none of these paths establishes our previous three-minute retry interval
+as a protocol requirement. The 30-second retry policy is specific to this
+component; it is not claimed to be identical to the reference slave logic.

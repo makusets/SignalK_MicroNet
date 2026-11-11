@@ -45,6 +45,7 @@ enum class Failure { NONE, TX_FAILED, NO_JOIN_REQUEST, NO_WIND_DATA, MISSING_SPE
 enum class Phase { IDLE, WAKE, WAIT, JOIN, CONFIRM, RUNNING, FAILED };
 class Engine {
  public:
+  static constexpr uint32_t RECOVERY_RETRY_MS=30000;
   void set_fast_pairing(bool value) { fast_pairing_=value; }
   bool fast_pairing() const { return fast_pairing_; }
   bool recovering() const { return recovering_; }
@@ -85,7 +86,7 @@ class Engine {
     // outage. Retry the proven wake/prepare/join sequence for that ID only.
     if (phase_==Phase::RUNNING && saved_.valid() &&
         now_ms-(seen_saved_?last_saved_ms_:running_since_ms_)>=30000 &&
-        (!recovery_attempted_ || now_ms-last_recovery_ms_>=180000)) {
+        (!recovery_attempted_ || now_ms-last_recovery_ms_>=RECOVERY_RETRY_MS)) {
       start_pairing(now_us); recovering_=true; recovery_attempted_=true;
       last_recovery_ms_=now_ms; ++recovery_attempts_;
     }

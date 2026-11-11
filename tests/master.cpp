@@ -141,8 +141,19 @@ int main() {
   backoff.completed(true,39000000,39003000,39003);
   step(backoff,54003); step(backoff,114003); step(backoff,144004);
   assert(backoff.paired() && !backoff.recovering() && backoff.recovery_attempts()==1);
-  step(backoff,145004); assert(backoff.recovery_attempts()==1); // No immediate retry loop.
-  step(backoff,213004); assert(backoff.recovery_attempts()==2 && backoff.recovering());
+  // The full attempt exceeded 30 seconds, so retry on the next idle cycle
+  // instead of waiting for the former three-minute start-to-start interval.
+  step(backoff,145004); assert(backoff.recovery_attempts()==2 && backoff.recovering());
+  Engine short_retry; short_retry.initialize(NETWORK,saved,0); step(short_retry,3000);
+  assert(short_retry.next(33000000,33000,f) && short_retry.recovering());
+  short_retry.completed(false,0,33001000,33001);
+  assert(short_retry.paired() && !short_retry.recovering());
+  step(short_retry,62999); assert(short_retry.recovery_attempts()==1);
+  step(short_retry,63000); assert(short_retry.recovery_attempts()==2 && short_retry.recovering());
+  // A long running join is never restarted just because 30 s passed.
+  short_retry.completed(true,69000000,69003000,69003);
+  step(short_retry,84003); step(short_retry,100000);
+  assert(short_retry.phase()==Phase::JOIN && short_retry.recovery_attempts()==2);
 
   Engine fast; fast.set_fast_pairing(true); fast.initialize(NETWORK,{},0);
   fast.start_pairing(0); step(fast,0,1); step(fast,15000);

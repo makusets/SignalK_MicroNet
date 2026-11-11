@@ -146,7 +146,7 @@ void Master::update_entities_() {
   report_status_(state);
 }
 void Master::dump_config() {
-  ESP_LOGCONFIG(TAG,"Fast pairing: %s; offline recovery after 30 s, retry interval 180 s",engine_.fast_pairing()?"YES (experimental)":"NO");
+  ESP_LOGCONFIG(TAG,"Fast pairing: %s; offline recovery after 30 s, minimum retry interval %u s",engine_.fast_pairing()?"YES (experimental)":"NO",unsigned(Engine::RECOVERY_RETRY_MS/1000));
   ESP_LOGCONFIG(TAG,"Standalone Micronet master network=%08X; missed async windows=%u",unsigned(network_id_),unsigned(engine_.missed_windows()));
 }
 }}
